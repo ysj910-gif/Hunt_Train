@@ -1,0 +1,29 @@
+{
+    "threshold": 3000.0,
+    "mapping": {
+        "ultimate": {
+            "key": "1",
+            "cd": "0"
+        },
+        "sub_attack": {
+            "key": "f",
+            "cd": "0"
+        },
+        "buff": {
+            "key": "4",
+            "cd": "0"
+        },
+        "rope": {
+            "key": "q",
+            "cd": "0"
+        },
+        "jump": {
+            "key": "e",
+            "cd": "0"
+        },
+        "attack": {
+            "key": "r",
+            "cd": "0"
+        }
+    }
+}
