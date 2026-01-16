@@ -1,29 +1,30 @@
 {
-    "threshold": 3000.0,
+    "job_name": "\ud0a4\ub124\uc2dc\uc2a4",
+    "threshold": 3000,
     "mapping": {
-        "ultimate": {
-            "key": "1",
-            "cd": "0"
-        },
-        "sub_attack": {
-            "key": "f",
-            "cd": "0"
-        },
-        "buff": {
-            "key": "4",
-            "cd": "0"
-        },
-        "rope": {
-            "key": "q",
-            "cd": "0"
-        },
-        "jump": {
-            "key": "e",
-            "cd": "0"
-        },
-        "attack": {
+        "\uc2f8\uc774\ud0a5 \ubd88\ub9bf": {
             "key": "r",
-            "cd": "0"
+            "cd": 0.0
+        },
+        "\uc5bc\ud2f0\uba54\uc774\ud2b8 : \uccb4\ud06c\uba54\uc774\ud2b8": {
+            "key": "f",
+            "cd": 30.0
+        },
+        "\uc5bc\ud2f0\uba54\uc774\ud2b8 : \uac2c\ube57": {
+            "key": "d",
+            "cd": 30.0
+        },
+        "\uc5bc\ud2f0\uba54\uc774\ud2b8 : \uc624\ud504\ub2dd": {
+            "key": "s",
+            "cd": 30.0
+        },
+        "\uc2dc\ud000\uc2a41": {
+            "key": "6",
+            "cd": 0.0
+        },
+        "\uc2f8\uc774\ud0a5 \uc2a4\ub9e4\uc2f1": {
+            "key": "t",
+            "cd": 0.0
         }
     }
 }

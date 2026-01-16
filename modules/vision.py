@@ -55,43 +55,59 @@ class VisionSystem:
         except Exception as e:
             print(f"⚠️ 창 찾기 오류: {e}")
             return False
+        
+    def set_roi(self, rect):
+        """GUI에서 지정한 ROI 영역 저장 (x, y, w, h)"""
+        self.kill_roi = rect
+        print(f"ROI 설정됨: {self.kill_roi}")
 
     def get_kill_count_ocr(self, frame):
-        """ '몬스터 처치' 텍스트 옆의 숫자를 인식 """
-        # 성능을 위해 1초에 한 번만 실행
-        if time.time() - self.last_ocr_time < 1.0:
+        """ 지정된 영역만 잘라내서 숫자로 변환 """
+        if not self.kill_roi:
+            return self.current_kill_count
+            
+        # 0.5초에 한 번만 인식 (부하 감소)
+        if time.time() - self.last_ocr_time < 0.5:
             return self.current_kill_count
         
         self.last_ocr_time = time.time()
         
         try:
-            # 1. 이미지 전처리 (흑백 변환 -> 이진화)
-            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-            # 글자가 잘 보이게 이진화 (흰 글씨/어두운 배경 가정)
-            _, thresh = cv2.threshold(gray, 150, 255, cv2.THRESH_BINARY)
-
-            # 2. 텍스트 데이터 추출 (한글 포함)
-            # psm 11: 텍스트가 흩어져 있다고 가정 (Sparse text)
-            data = pytesseract.image_to_data(thresh, lang='kor', config='--psm 11', output_type=pytesseract.Output.DICT)
-            
-            n_boxes = len(data['text'])
-            for i in range(n_boxes):
-                text = data['text'][i].strip()
+            # 1. ROI 영역 자르기
+            x, y, w, h = self.kill_roi
+            # 프레임 범위를 벗어나지 않게 클리핑
+            h_img, w_img = frame.shape[:2]
+            if x < 0 or y < 0 or x+w > w_img or y+h > h_img:
+                return self.current_kill_count
                 
-                # 3. 키워드 찾기 ("처치" 또는 "마리")
-                if "처치" in text or "몬스터" in text:
-                    # 키워드 발견! 그 뒤에 나오는 숫자 찾기 (최대 3단어 뒤까지 탐색)
-                    for j in range(i + 1, min(i + 5, n_boxes)):
-                        next_text = data['text'][j].strip()
-                        # 숫자만 있거나 "123마리" 처럼 숫자가 포함된 경우
-                        digits = ''.join(filter(str.isdigit, next_text))
-                        if digits:
-                            self.current_kill_count = int(digits)
-                            # print(f"OCR 인식: {self.current_kill_count} 마리") # 디버깅용
-                            return self.current_kill_count
-                            
+            roi = frame[y:y+h, x:x+w]
+            
+            # 2. 이미지 전처리 (인식률 높이기 핵심)
+            # 흑백 변환
+            gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+            
+            # 크기 확대 (작은 글씨 인식용, 3배 확대)
+            gray = cv2.resize(gray, None, fx=3, fy=3, interpolation=cv2.INTER_CUBIC)
+            
+            # 이진화 (글자는 검정, 배경은 흰색, 혹은 그 반대로 확실하게 분리)
+            # 메이플 전투분석창은 어두운 배경에 흰 글씨 -> 반전시켜서 흰 배경에 검은 글씨로 만듦 (Tesseract 선호)
+            gray = cv2.bitwise_not(gray)
+            _, thresh = cv2.threshold(gray, 100, 255, cv2.THRESH_BINARY)
+            
+            # 3. Tesseract 실행 (숫자 모드)
+            # --psm 7: 이미지를 한 줄의 텍스트로 취급
+            # digits: 숫자만 인식하도록 제한
+            text = pytesseract.image_to_string(thresh, config='--psm 7 outputbase digits')
+            
+            # 4. 숫자 추출
+            digits = ''.join(filter(str.isdigit, text))
+            
+            if digits:
+                self.current_kill_count = int(digits)
+                # print(f"인식된 숫자: {self.current_kill_count}") # 디버깅용
+                
         except Exception as e:
-            # print(f"OCR 오류 (Tesseract 설치 확인 필요): {e}")
+            # print(f"OCR 에러: {e}")
             pass
             
         return self.current_kill_count

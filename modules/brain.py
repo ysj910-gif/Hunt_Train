@@ -6,11 +6,24 @@ import json
 
 class SkillManager:
     def __init__(self):
-        self.cooldowns = config.DEFAULT_COOLDOWNS.copy()
-        self.last_used = {k: 0.0 for k in self.cooldowns}
+        self.cooldowns = {} # 초기에는 빈 상태 (UI에서 로드됨)
+        self.last_used = {}
 
-    def set_cooldown(self, skill, seconds):
-        self.cooldowns[skill] = float(seconds)
+    def update_skill_list(self, new_skill_dict):
+        """
+        GUI에서 설정한 스킬 목록을 통째로 덮어씌우는 함수
+        new_skill_dict 예시: {"Genesis": 30.0, "Heal": 5.0}
+        """
+        self.cooldowns = new_skill_dict
+        
+        # 기존 사용 기록은 유지하되, 삭제된 스킬은 제거
+        new_last_used = {}
+        for skill in self.cooldowns:
+            if skill in self.last_used:
+                new_last_used[skill] = self.last_used[skill]
+            else:
+                new_last_used[skill] = 0.0
+        self.last_used = new_last_used
 
     def is_ready(self, skill):
         if skill not in self.cooldowns: return True
@@ -25,38 +38,37 @@ class SkillManager:
         elapsed = time.time() - self.last_used.get(skill, 0)
         return max(0.0, self.cooldowns[skill] - elapsed)
 
-class StrategyBrain:
-    def __init__(self, skill_manager):
-        self.sm = skill_manager
-        self.threshold = 3000
-        self.current_map_data = None # 맵 데이터 저장용
-
     def load_map_file(self, file_path):
-        """JSON 맵 파일을 불러오는 기능 추가"""
+        """JSON 파일에서 발판 정보를 읽어옵니다."""
         try:
             with open(file_path, 'r', encoding='utf-8') as f:
-                self.current_map_data = json.load(f)
-            print(f"✅ 맵 로드 성공: {file_path}")
+                data = json.load(f)
+            
+            self.footholds = []
+            
+            # 1. "platforms" 키가 있는 경우 (제공해주신 데이터 포맷)
+            # 포맷: {"y": 112, "x_start": 22, "x_end": 67, ...}
+            platforms = data.get("platforms", [])
+            
+            # 만약 "platforms" 키가 없고 리스트 자체가 데이터라면
+            if not platforms and isinstance(data, list):
+                platforms = data
+
+            for p in platforms:
+                # 필수 키가 존재하는지 확인
+                if "x_start" in p and "x_end" in p and "y" in p:
+                    x1 = p["x_start"]
+                    x2 = p["x_end"]
+                    y = p["y"]
+                    # 그리기 쉽도록 (x1, y1, x2, y2) 형태로 저장
+                    self.footholds.append((x1, y, x2, y))
+            
+            print(f"✅ 맵 로드 성공: 발판 {len(self.footholds)}개")
             return True
         except Exception as e:
             print(f"❌ 맵 로드 실패: {e}")
+            self.footholds = []
             return False
 
     def decide_action(self, entropy):
-        """엔트로피 수치를 보고 행동 결정"""
-        
-        # 1. 광역기 (몹이 매우 많음)
-        if entropy > self.threshold * 1.5 and self.sm.is_ready("ultimate"):
-            return "ultimate"
-        
-        # 2. 서브 스킬 (몹이 적당함)
-        elif entropy > self.threshold and self.sm.is_ready("sub_attack"):
-            return "sub_attack"
-        
-        # 3. 평타 (몹이 조금 있음)
-        elif entropy > self.threshold * 0.8:
-            return "attack"
-        
-        # 4. 몬스터 없음 -> 이동
-        else:
-            return "patrol"
+        return "patrol"
