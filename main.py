@@ -1,18 +1,27 @@
 # main.py
 import tkinter as tk
 from gui import MapleHunterUI
-
-# === [추가할 코드 시작] 듀얼 모니터/DPI 문제 해결 ===
 import ctypes
+
+# === 안전한 DPI 설정 (충돌 방지) ===
 try:
-    # 윈도우 8.1 이상
-    ctypes.windll.shcore.SetProcessDpiAwareness(1)
-except Exception:
-    # 윈도우 8 이하
-    ctypes.windll.user32.SetProcessDPIAware()
-# === [추가할 코드 끝] ==============================
+    # 윈도우 10 이상에서 가장 호환성이 좋은 설정
+    ctypes.windll.shcore.SetProcessDpiAwareness(1) 
+except AttributeError:
+    try:
+        # 구버전 윈도우 호환
+        ctypes.windll.user32.SetProcessDPIAware()
+    except:
+        pass
+# =================================
 
 if __name__ == "__main__":
     root = tk.Tk()
+    
+    # 앱 실행 시 창을 잠시 맨 앞으로 가져옴
+    root.attributes('-topmost', True)
+    root.update()
+    root.attributes('-topmost', False)
+    
     app = MapleHunterUI(root)
     root.mainloop()

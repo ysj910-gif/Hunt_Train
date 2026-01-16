@@ -2,6 +2,7 @@
 import time
 import random
 import config
+import json
 
 class SkillManager:
     def __init__(self):
@@ -28,6 +29,18 @@ class StrategyBrain:
     def __init__(self, skill_manager):
         self.sm = skill_manager
         self.threshold = 3000
+        self.current_map_data = None # 맵 데이터 저장용
+
+    def load_map_file(self, file_path):
+        """JSON 맵 파일을 불러오는 기능 추가"""
+        try:
+            with open(file_path, 'r', encoding='utf-8') as f:
+                self.current_map_data = json.load(f)
+            print(f"✅ 맵 로드 성공: {file_path}")
+            return True
+        except Exception as e:
+            print(f"❌ 맵 로드 실패: {e}")
+            return False
 
     def decide_action(self, entropy):
         """엔트로피 수치를 보고 행동 결정"""

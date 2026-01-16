@@ -1,13 +1,12 @@
 # gui.py
 import tkinter as tk
-from tkinter import ttk, messagebox
+from tkinter import ttk, messagebox, filedialog
 from PIL import Image, ImageTk
 import cv2
 import threading
 import time
 import random
-import tkinter as tk
-from tkinter import ttk, messagebox, filedialog
+import os
 
 from modules.vision import VisionSystem
 from modules.brain import SkillManager, StrategyBrain
@@ -28,10 +27,11 @@ class MapleHunterUI:
         
         self.is_running = False
         self.ui_entries = {} # UI 입력창 저장소
+        self.map_path = None
 
         self.setup_ui()
         self.load_settings()
-        self.map_path = None
+        
 
     def setup_ui(self):
         # 레이아웃 생성
@@ -47,21 +47,13 @@ class MapleHunterUI:
         self.canvas = tk.Canvas(left, bg="black", height=360)
         self.canvas.pack(fill="x", pady=5)
         
-        # self.lbl_action 아래나 옆에 킬 카운트 라벨 추가
-        status_frame = ttk.Frame(left)
-        status_frame.pack(fill="x", pady=10)
-        self.lbl_entropy = ttk.Label(status_frame, text="Entropy: 0", font=("Consolas", 14), foreground="blue")
-        self.lbl_entropy.pack(side="left")
-        self.lbl_action = ttk.Label(status_frame, text="Action: IDLE", font=("Consolas", 14, "bold"), foreground="red")
-        self.lbl_action.pack(side="right")
-
+        # 상태 표시창 (Entropy, Kills, Action)
         status_frame = ttk.Frame(left)
         status_frame.pack(fill="x", pady=10)
         
         self.lbl_entropy = ttk.Label(status_frame, text="Entropy: 0", font=("Consolas", 14), foreground="blue")
         self.lbl_entropy.pack(side="left", padx=5)
         
-        # [추가됨] 킬 카운트 라벨
         self.lbl_kill = ttk.Label(status_frame, text="Kills: 0", font=("Consolas", 14, "bold"), foreground="green")
         self.lbl_kill.pack(side="left", padx=20)
         
@@ -91,15 +83,14 @@ class MapleHunterUI:
         
         # 버튼
         ttk.Button(right, text="Save Config", command=self.save_settings).pack(fill="x", pady=10)
+        
+        self.btn_find_win = ttk.Button(right, text="🔍 메이플 창 자동 찾기", command=self.find_window_action)
+        self.btn_find_win.pack(fill="x", pady=5)
+        
         self.btn_start = ttk.Button(right, text="▶ START", command=self.toggle_running)
         self.btn_start.pack(fill="x", ipady=10)
 
-        # gui.py 내 setup_ui 함수 안쪽 적절한 곳 (예: Start 버튼 위)
-
-        self.btn_find_win = ttk.Button(right, text="🔍 메이플 창 자동 찾기", command=self.find_window_action)
-        self.btn_find_win.pack(fill="x", pady=5)
-
-        # === [추가된 부분] 맵 파일 로드 버튼 ===
+        # 맵 파일 로드 버튼
         map_frame = ttk.LabelFrame(right, text="Map Data")
         map_frame.pack(fill="x", pady=5)
         
@@ -107,7 +98,6 @@ class MapleHunterUI:
         self.lbl_map_name.pack(side="left", padx=5)
         
         ttk.Button(map_frame, text="📂 Load JSON", command=self.open_map_file).pack(side="right", padx=5)
-        # ========================================
 
     def create_pb(self, parent, text):
         f = ttk.Frame(parent); f.pack(fill="x", pady=2)
@@ -124,6 +114,7 @@ class MapleHunterUI:
             vals = mapping.get(skill, {"key": "", "cd": "0"})
             e_key.delete(0, tk.END); e_key.insert(0, vals["key"])
             e_cd.delete(0, tk.END); e_cd.insert(0, vals["cd"])
+            
         last_map = data.get("last_map")
         if last_map and os.path.exists(last_map):
             self.map_path = last_map
@@ -134,7 +125,7 @@ class MapleHunterUI:
         data = {
             "threshold": self.scale_thresh.get(), 
             "mapping": {},
-            "last_map": self.map_path # 맵 경로 저장
+            "last_map": self.map_path
         }
         for skill, (e_key, e_cd) in self.ui_entries.items():
             data["mapping"][skill] = {"key": e_key.get(), "cd": e_cd.get()}
@@ -142,7 +133,6 @@ class MapleHunterUI:
         messagebox.showinfo("Saved", "설정이 저장되었습니다.")
 
     def open_map_file(self):
-        """파일 선택 창 열기"""
         file_path = filedialog.askopenfilename(
             title="Select Map JSON",
             filetypes=[("JSON Files", "*.json"), ("All Files", "*.*")]
@@ -150,18 +140,15 @@ class MapleHunterUI:
         
         if file_path:
             self.map_path = file_path
-            # 1. GUI 라벨 업데이트
             file_name = file_path.split("/")[-1]
             self.lbl_map_name.config(text=file_name, foreground="green")
             
-            # 2. Brain에 맵 데이터 주입
             if self.brain.load_map_file(file_path):
                 messagebox.showinfo("Success", f"맵 데이터 로드 완료!\n{file_name}")
             else:
                 messagebox.showerror("Error", "맵 파일을 읽지 못했습니다.")
 
     def apply_ui_to_logic(self):
-        # UI 값을 로직 모듈로 전송
         self.brain.threshold = self.scale_thresh.get()
         new_key_map = {}
         for skill, (e_key, e_cd) in self.ui_entries.items():
@@ -183,50 +170,46 @@ class MapleHunterUI:
 
     def loop(self):
         while self.is_running:
-            # 1. Vision: frame, entropy, kill_count 3개를 받음
             frame, entropy, kill_count = self.vision.capture_and_analyze()
-            
-            # 2. Brain: 생각하고
             action = self.brain.decide_action(entropy)
-            
-            # 3. Hand: 누른다
             log = self.input_handler.execute(action)
+            
             if action in ["ultimate", "sub_attack", "buff"]:
                 self.skill_manager.use(action)
 
-            # 4. GUI 업데이트 (kill_count 전달)
+            # 수정됨: kill_count 인자 추가
             self.root.after(0, self.update_gui, frame, entropy, action, log, kill_count)
             
             time.sleep(random.uniform(0.1, 0.2))
 
-    def update_gui(self, frame, entropy, action, log):
-        # 이미지
-        frame_s = cv2.resize(frame, (320, 180))
-        img = ImageTk.PhotoImage(image=Image.fromarray(cv2.cvtColor(frame_s, cv2.COLOR_BGR2RGB)))
-        self.canvas.create_image(0, 0, image=img, anchor="nw")
-        self.canvas.image = img
+    # 수정됨: kill_count 인자 추가
+    def update_gui(self, frame, entropy, action, log, kill_count):
+        # [수정됨] 이미지 크기를 캔버스 크기(640x360)에 맞춰서 키움
+        # 캔버스 height가 360이므로, 비율에 맞춰 640x360으로 변경
+        if frame is not None and frame.shape[0] > 0:
+            frame_s = cv2.resize(frame, (640, 360)) 
+            img = ImageTk.PhotoImage(image=Image.fromarray(cv2.cvtColor(frame_s, cv2.COLOR_BGR2RGB)))
+            
+            # 캔버스 중앙에 이미지를 그림
+            self.canvas.create_image(0, 0, image=img, anchor="nw")
+            self.canvas.image = img # 가비지 컬렉션 방지 (필수)
         
-        # 텍스트
+        # 텍스트 업데이트
         self.lbl_entropy.config(text=f"Entropy: {entropy:.0f}")
         self.lbl_action.config(text=f"Action: {action} ({log})")
-        self.lbl_kill.config(text=f"Kills: {kill_count}") # [추가됨]
-       
+        self.lbl_kill.config(text=f"Kills: {kill_count}")
 
-        # 쿨타임 바 업데이트 (수정된 부분)
+        # 쿨타임 바 업데이트
         for skill, pb in [("ultimate", self.pb_ultimate), ("sub_attack", self.pb_sub)]:
             rem = self.skill_manager.get_remaining(skill)
-            tot = self.skill_manager.cooldowns.get(skill, 0) # 기본값을 0으로
+            tot = self.skill_manager.cooldowns.get(skill, 0)
             
-            # [수정] 쿨타임 총합이 0보다 클 때만 계산 (0으로 나누기 방지)
             if tot > 0:
                 pb['value'] = ((tot - rem) / tot) * 100
             else:
-                pb['value'] = 100 # 쿨타임이 0이면 항상 꽉 찬 상태
+                pb['value'] = 100
 
-    # gui.py 의 MapleHunterUI 클래스 안쪽에 이 함수를 추가하세요.
-    
     def find_window_action(self):
-        # Vision 모듈에게 창 찾기 명령을 내림
         if self.vision.find_maple_window():
             messagebox.showinfo("성공", "메이플스토리 창을 찾아 좌표를 고정했습니다.")
         else:
