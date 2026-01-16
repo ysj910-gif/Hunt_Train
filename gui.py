@@ -47,12 +47,26 @@ class MapleHunterUI:
         self.canvas = tk.Canvas(left, bg="black", height=360)
         self.canvas.pack(fill="x", pady=5)
         
+        # self.lbl_action 아래나 옆에 킬 카운트 라벨 추가
         status_frame = ttk.Frame(left)
         status_frame.pack(fill="x", pady=10)
         self.lbl_entropy = ttk.Label(status_frame, text="Entropy: 0", font=("Consolas", 14), foreground="blue")
         self.lbl_entropy.pack(side="left")
         self.lbl_action = ttk.Label(status_frame, text="Action: IDLE", font=("Consolas", 14, "bold"), foreground="red")
         self.lbl_action.pack(side="right")
+
+        status_frame = ttk.Frame(left)
+        status_frame.pack(fill="x", pady=10)
+        
+        self.lbl_entropy = ttk.Label(status_frame, text="Entropy: 0", font=("Consolas", 14), foreground="blue")
+        self.lbl_entropy.pack(side="left", padx=5)
+        
+        # [추가됨] 킬 카운트 라벨
+        self.lbl_kill = ttk.Label(status_frame, text="Kills: 0", font=("Consolas", 14, "bold"), foreground="green")
+        self.lbl_kill.pack(side="left", padx=20)
+        
+        self.lbl_action = ttk.Label(status_frame, text="Action: IDLE", font=("Consolas", 14, "bold"), foreground="red")
+        self.lbl_action.pack(side="right", padx=5)
 
         # 쿨타임 바
         self.pb_ultimate = self.create_pb(left, "Ultimate")
@@ -169,8 +183,8 @@ class MapleHunterUI:
 
     def loop(self):
         while self.is_running:
-            # 1. Vision: 보고
-            frame, entropy = self.vision.capture_and_analyze()
+            # 1. Vision: frame, entropy, kill_count 3개를 받음
+            frame, entropy, kill_count = self.vision.capture_and_analyze()
             
             # 2. Brain: 생각하고
             action = self.brain.decide_action(entropy)
@@ -180,10 +194,10 @@ class MapleHunterUI:
             if action in ["ultimate", "sub_attack", "buff"]:
                 self.skill_manager.use(action)
 
-            # 4. GUI 업데이트
-            self.root.after(0, self.update_gui, frame, entropy, action, log)
+            # 4. GUI 업데이트 (kill_count 전달)
+            self.root.after(0, self.update_gui, frame, entropy, action, log, kill_count)
             
-            time.sleep(random.uniform(0.1, 0.2)) # 루프 속도 조절
+            time.sleep(random.uniform(0.1, 0.2))
 
     def update_gui(self, frame, entropy, action, log):
         # 이미지
@@ -195,7 +209,9 @@ class MapleHunterUI:
         # 텍스트
         self.lbl_entropy.config(text=f"Entropy: {entropy:.0f}")
         self.lbl_action.config(text=f"Action: {action} ({log})")
-        
+        self.lbl_kill.config(text=f"Kills: {kill_count}") # [추가됨]
+       
+
         # 쿨타임 바 업데이트 (수정된 부분)
         for skill, pb in [("ultimate", self.pb_ultimate), ("sub_attack", self.pb_sub)]:
             rem = self.skill_manager.get_remaining(skill)
