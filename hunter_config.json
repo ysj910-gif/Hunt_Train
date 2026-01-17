@@ -1,6 +1,5 @@
 {
     "job_name": "\ud0a4\ub124\uc2dc\uc2a4",
-    "threshold": 3000,
     "mapping": {
         "\uc2f8\uc774\ud0a5 \ubd88\ub9bf": {
             "key": "r",
@@ -36,5 +35,11 @@
         }
     },
     "map_offset_x": 0,
-    "map_offset_y": 0
+    "map_offset_y": 0,
+    "minimap_roi": [
+        9,
+        71,
+        179,
+        83
+    ]
 }

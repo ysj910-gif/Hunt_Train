@@ -12,6 +12,11 @@ import pytesseract
 # Tesseract 경로
 pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
 
+try:
+    ctypes.windll.shcore.SetProcessDpiAwareness(1)
+except Exception:
+    ctypes.windll.user32.SetProcessDPIAware()
+
 # 좌표 계산용 구조체
 user32 = ctypes.windll.user32
 class RECT(ctypes.Structure):

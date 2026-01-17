@@ -5,69 +5,73 @@ import os
 from datetime import datetime
 
 class DataLogger:
-    def __init__(self, job_name="Unknown"):
+    def __init__(self, job_name): # [수정] job_name을 받도록 변경
         # 데이터 저장 폴더 생성
         if not os.path.exists("data"):
             os.makedirs("data")
             
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        clean_job = "".join(x for x in job_name if x.isalnum())
-        if not clean_job: clean_job = "NoName"
-            
-        self.filepath = f"data/{clean_job}_{timestamp}.csv"
+        # 파일명에 직업 이름 포함
+        self.filepath = f"data/{job_name}_{timestamp}.csv"
         
-        # [수정] CSV 헤더에 좌표(player_x, player_y) 추가
+        # [핵심] 파일을 미리 열어둡니다 (속도 향상 및 멈춤 방지)
+        self.file = open(self.filepath, "w", newline="", encoding="utf-8")
+        self.writer = csv.writer(self.file)
+        
+        # [수정] train.py 학습에 필요한 컬럼명(player_x 등)으로 통일
         self.headers = [
             "timestamp", 
-            "entropy",       
-            "skill_name",    
-            "key_pressed",   
-            "active_skills", 
-            "player_x",      # [신규]
-            "player_y",      # [신규]
-            "kill_count",    
-            "kill_reward"    
+            "entropy", 
+            "ult_ready", 
+            "sub_ready", 
+            "action_name",    # 스킬 이름 (예: Attack)
+            "key_pressed",    # 실제 눌린 키 (예: ctrl) - train.py의 target
+            "player_x",       # [추가] 좌표 X
+            "player_y",       # [추가] 좌표 Y
+            "platform_id",    # [추가] 발판 ID (나중에 gui.py에서 계산 필요)
+            "kill_count", 
+            "kill_reward"
         ]
-        
-        with open(self.filepath, "w", newline="", encoding="utf-8") as f:
-            writer = csv.writer(f)
-            writer.writerow(self.headers)
+        self.writer.writerow(self.headers)
             
         self.last_kills = 0
-        print(f"✅ 데이터 수집 시작: {self.filepath}")
+        print(f"✅ 고속 데이터 수집 시작: {self.filepath}")
 
-    # [수정] 인자에 px, py 추가
-    def log_step(self, entropy, skill_manager, skill_name, key_char, px, py, current_kills):
+    # [수정] gui.py가 보내주는 7개 인자를 모두 받도록 수정 (+ platform_id는 선택)
+    def log_step(self, entropy, skill_manager, action_name, key_pressed, px, py, current_kills, platform_id=-1):
+        """
+        한 번의 행동(프레임)마다 데이터를 저장함
+        """
+        # 보상 계산
         reward = max(0, current_kills - self.last_kills)
         
-        # 활성 스킬(설치기) 목록 만들기
-        active_list = []
-        # skill_manager에 durations 속성이 있는지 확인 (안전장치)
-        if hasattr(skill_manager, 'durations'): 
-            for s_name in skill_manager.durations:
-                if skill_manager.is_active(s_name):
-                    active_list.append(s_name)
+        # 쿨타임 상태 확인
+        ult_ready = 1 if skill_manager.is_ready("ultimate") else 0
+        sub_ready = 1 if skill_manager.is_ready("sub_attack") else 0
         
-        active_str = "|".join(active_list) if active_list else "None"
-        
-        # [수정] 좌표 데이터 포함하여 저장
+        # 데이터 행 생성
         row = [
             time.time(),
             f"{entropy:.2f}",
-            skill_name,
-            key_char,
-            active_str,
-            px, # [신규] 좌표 X
-            py, # [신규] 좌표 Y
+            ult_ready,
+            sub_ready,
+            action_name,
+            key_pressed,
+            px,               # player_x 저장
+            py,               # player_y 저장
+            platform_id,      # platform_id 저장
             current_kills,
             reward
         ]
         
-        try:
-            with open(self.filepath, "a", newline="", encoding="utf-8") as f:
-                writer = csv.writer(f)
-                writer.writerow(row)
-        except Exception as e:
-            print(f"로그 저장 실패: {e}")
-            
+        # 열어둔 파일에 즉시 기록 (I/O 지연 없음)
+        self.writer.writerow(row)
+        
         self.last_kills = current_kills
+
+    def close(self):
+        """녹화 종료 시 호출하여 파일 안전하게 닫기"""
+        if self.file:
+            self.file.close()
+            self.file = None
+            print("✅ 로그 파일 저장 완료 및 닫기")

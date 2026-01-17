@@ -5,68 +5,44 @@ from PIL import Image, ImageTk
 import cv2
 import threading
 import time
-import os
-import numpy as np
-import torch
-import torch.nn as nn
-from collections import deque
+import random
 from pynput import keyboard
-import pandas as pd  # [추가] 데이터프레임 생성을 위해 필요
 
+# 모듈 임포트
 from modules.vision import VisionSystem
 from modules.brain import SkillManager
 from modules.input import InputHandler
 from modules.logger import DataLogger
+from modules.agent import BotAgent  # [신규] 뇌 담당 Agent
+from modules.humanizer import Humanizer  # [추가]
 import utils
-import config
 
-# === [1] AI 모델 클래스 (학습된 모델 구조와 동일해야 함) ===
-class LSTMModel(nn.Module):
-    def __init__(self, input_size, hidden_size, num_layers, num_classes):
-        super(LSTMModel, self).__init__()
-        # 설정값을 저장해둠
-        self.hidden_size = hidden_size
-        self.num_layers = num_layers
-        
-        self.lstm = nn.LSTM(input_size, hidden_size, num_layers, batch_first=True, dropout=0.2)
-        self.fc = nn.Linear(hidden_size, num_classes)
-        
-    def forward(self, x):
-        # 저장된 설정값 사용
-        h0 = torch.zeros(self.num_layers, x.size(0), self.hidden_size).to(x.device) 
-        c0 = torch.zeros(self.num_layers, x.size(0), self.hidden_size).to(x.device)
-        out, _ = self.lstm(x, (h0, c0))
-        out = self.fc(out[:, -1, :])
-        return out
 
 class MapleHunterUI:
     def __init__(self, root):
         self.root = root
-        self.root.title("Maple Hunter All-in-One (Recorder & Bot)")
+        self.root.title("Maple Hunter Modular Ver.")
         self.root.geometry("1200x950")
 
-        # 모듈 초기화
+        # 1. 핵심 모듈 초기화
         self.vision = VisionSystem()
         self.skill_manager = SkillManager()
-        self.logger = None 
         self.input_handler = InputHandler()
+        self.humanizer = Humanizer()
+        self.agent = BotAgent() # [신규] 여기서 Agent 생성
+        self.logger = None 
+
+        self.humanizer.blending_ratio = 0.7
         
+        # Brain (발판 정보)
         from modules.brain import StrategyBrain 
         self.brain = StrategyBrain(self.skill_manager)
 
         # 상태 변수
         self.is_recording = False
-        self.is_botting = False  # [신규] 봇 가동 상태
+        self.is_botting = False
         self.held_keys = set()
         
-        # AI 모델 관련 변수
-        self.model = None
-        self.scaler = None
-        self.encoder = None
-        self.history = deque(maxlen=10) # 10프레임 기억 저장소
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-        # 스킬 및 오프셋
         self.skill_rows = []
         self.key_to_skill_map = {} 
         self.map_offset_x = 0
@@ -75,15 +51,12 @@ class MapleHunterUI:
         self.setup_ui()
         self.load_settings()
         
-        # 키보드 리스너
-        self.listener = keyboard.Listener(
-            on_press=self.on_key_press,
-            on_release=self.on_key_release
-        )
+        # 키 리스너 & 루프 시작
+        self.listener = keyboard.Listener(on_press=self.on_key_press, on_release=self.on_key_release)
         self.listener.start()
+        threading.Thread(target=self.humanizer.fit_from_logs, daemon=True).start()
 
-        # 메인 루프 시작
-        threading.Thread(target=self.loop, daemon=True).start()
+        self.agent = BotAgent()
 
     def on_key_press(self, key):
         if self.is_recording:
@@ -226,38 +199,33 @@ class MapleHunterUI:
     # === [기능 구현] ===
 
     def load_model_action(self):
-        file_path = filedialog.askopenfilename(title="Select Model .pth", filetypes=[("PyTorch Model", "*.pth")])
-        if not file_path: return
-        
-        try:
-            # weights_only=False로 경고 방지
-            checkpoint = torch.load(file_path, map_location=self.device, weights_only=False)
-            self.scaler = checkpoint['scaler']
-            self.encoder = checkpoint['encoder']
+        """LSTM 모델 로드 요청 (누락된 함수 복구)"""
+        path = filedialog.askopenfilename(title="Select LSTM .pth", filetypes=[("PyTorch Model", "*.pth")])
+        if path:
+            # Agent에게 모델 로드 위임
+            success, msg = self.agent.load_lstm(path)
             
-            # [추가] 학습 때 사용한 컬럼 이름 불러오기 (없으면 기본값 사용)
-            self.feature_cols = checkpoint.get('feature_cols', ['player_x', 'player_y', 'entropy', 'platform_id', 'ult_ready', 'sub_ready'])
-            
-            input_size = checkpoint.get('input_size', 6)
-            hidden_size = checkpoint.get('hidden_size', 128)
-            num_layers = checkpoint.get('num_layers', 2)
-            num_classes = checkpoint.get('num_classes', 10)
+            if success:
+                self.lbl_model_name.config(text=f"LSTM: {path.split('/')[-1]}", foreground="blue")
+                self.btn_bot.config(state="normal")
+                messagebox.showinfo("로드 성공", msg)
+            else:
+                messagebox.showerror("로드 실패", msg)
 
-            self.model = LSTMModel(input_size, hidden_size, num_layers, num_classes).to(self.device)
-            self.model.load_state_dict(checkpoint['model_state'])
-            self.model.eval()
-            
-            self.lbl_model_name.config(text=file_path.split("/")[-1], foreground="blue")
-            self.btn_bot.config(state="normal")
-            messagebox.showinfo("모델 로드", "LSTM 모델 로드 성공!\n이제 '봇 가동' 버튼을 누를 수 있습니다.")
-            
-        except Exception as e:
-            messagebox.showerror("로드 실패", f"모델을 불러오는데 실패했습니다:\n{e}")
+    def load_rf_model_action(self):
+        """RF 모델 로드 요청"""
+        path = filedialog.askopenfilename(title="Select RF .pkl", filetypes=[("Pickle files", "*.pkl")])
+        if path:
+            success, msg = self.agent.load_rf(path)
+            if success:
+                self.lbl_rf_name.config(text=f"RF: {path.split('/')[-1]}", foreground="green")
+                messagebox.showinfo("로드 성공", msg)
+            else:
+                messagebox.showerror("로드 실패", msg)
 
     def toggle_botting(self):
-        """[신규] 봇 가동/중지 토글"""
         if not self.vision.window_found:
-            messagebox.showwarning("경고", "먼저 메이플 창을 찾아주세요.")
+            messagebox.showwarning("경고", "먼저 창을 찾으세요.")
             return
 
         if self.is_botting:
@@ -269,6 +237,7 @@ class MapleHunterUI:
             self.is_botting = True
             self.btn_bot.config(text="⏹ STOP BOT (중지)", state="normal")
             self.lbl_bot_status.config(text="[BOT: ON]", foreground="red")
+            self.agent.reset_history() # 기억 초기화
             self.history.clear() # 기억 초기화
 
     def find_platform_id(self, px, py):
@@ -283,77 +252,59 @@ class MapleHunterUI:
         return best_id
 
     def loop(self):
-        """메인 처리 루프 (녹화 및 봇 구동 공용)"""
+        """메인 루프 (아주 깔끔해짐)"""
         while True:
-            # 1. 화면 캡처
+            # 1. 인식
             if self.vision.window_found:
                 frame, entropy, kill_count, px, py = self.vision.capture_and_analyze()
             else:
-                frame, entropy, kill_count, px, py = None, 0, 0, 0, 0
+                frame, px, py = None, 0, 0
                 time.sleep(0.5); continue
 
-            # 2. 공통 데이터 계산
-            current_keys_str = "+".join(sorted(self.held_keys)) if self.held_keys else "None"
+            # 2. 정보 계산
             pid = self.find_platform_id(px, py)
-            
+            current_keys = "+".join(sorted(self.held_keys)) if self.held_keys else "None"
             active_skill = "Idle"
-            
-            # --- [녹화 모드] ---
+
+            # 3. 녹화 모드
             if self.is_recording and self.logger:
                 for k in self.held_keys:
                     if k in self.key_to_skill_map:
-                        s_name = self.key_to_skill_map[k]
-                        self.skill_manager.use(s_name)
-                        active_skill = s_name
-                self.logger.log_step(entropy, self.skill_manager, active_skill, current_keys_str, px, py, pid, kill_count)
+                        active_skill = self.key_to_skill_map[k]
+                        self.skill_manager.use(active_skill)
+                self.logger.log_step(entropy, self.skill_manager, active_skill, current_keys, px, py, pid, kill_count)
 
-            # --- [봇 모드] ---
-            if self.is_botting and self.model:
+            # 4. 봇 모드 (Agent에게 물어보고 실행만 함)
+            if self.is_botting:
                 try:
-                    ult_ready = 1 if self.skill_manager.is_ready("ultimate") else 0
-                    sub_ready = 1 if self.skill_manager.is_ready("sub_attack") else 0
+                    ult = 1 if self.skill_manager.is_ready("ultimate") else 0
+                    sub = 1 if self.skill_manager.is_ready("sub_attack") else 0
                     
-                    # [핵심 수정] numpy array 대신 pandas DataFrame 사용 (경고 제거)
-                    # Feature 순서: [px, py, entropy, pid, ult_ready, sub_ready]
-                    # 주의: self.feature_cols가 로드되지 않았을 경우를 대비해 기본값 지정
-                    cols = getattr(self, 'feature_cols', ['player_x', 'player_y', 'entropy', 'platform_id', 'ult_ready', 'sub_ready'])
+                    # [핵심] Agent야, 지금 상황(State) 줄게. 뭐 해야 해(Action)?
+                    action, debug_msg = self.agent.get_action(px, py, entropy, pid, ult, sub)
                     
-                    input_df = pd.DataFrame([[px, py, entropy, pid, ult_ready, sub_ready]], columns=cols)
-                    
-                    # DataFrame을 넣으면 Scaler가 경고를 띄우지 않습니다.
-                    feats_scaled = self.scaler.transform(input_df)
-                    
-                    self.history.append(feats_scaled[0])
-                    
-                    # 3. 추론 (데이터 10개 쌓이면)
-                    if len(self.history) == 10:
-                        inp = torch.FloatTensor(np.array([self.history])).to(self.device)
-                        
-                        with torch.no_grad():
-                            out = self.model(inp)
-                            _, pred = torch.max(out, 1)
-                            action_name = self.encoder.inverse_transform([pred.item()])[0]
-                        
-                        active_skill = action_name
-                        
-                        # 4. 행동 실행
-                        if action_name != "None":
-                            keys = action_name.split('+')
-                            for s_name, s_key in self.input_handler.key_map.items():
-                                if s_key in keys: self.skill_manager.use(s_name)
+                    active_skill = debug_msg # UI 표시
 
-                            for k in keys: self.input_handler.hold(k)
-                            time.sleep(0.04) 
-                            for k in keys: self.input_handler.release(k)
-                            
+                    # ... (봇 행동 실행 부분)
+                    if action != "None":
+                        keys = action.split('+')
+                        # 쿨타임 처리
+                        for s_name, s_key in self.input_handler.key_map.items():
+                            if s_key in keys: self.skill_manager.use(s_name)
+                        
+                        # [핵심 수정] 학습된 데이터 기반으로 딜레이 결정
+                        press_time = self.humanizer.get_press_duration()
+
+                        for k in keys: self.input_handler.hold(k)   # 누르기
+                        time.sleep(press_time)                      # 누른 상태 유지 (사람 같은 시간)
+                        for k in keys: self.input_handler.release(k) # 떼기
+
                 except Exception as e:
                     self.is_botting = False
-                    print(f"Bot Error: {e}")
-                    self.root.after(0, lambda: messagebox.showerror("봇 런타임 오류", f"봇 실행 중 문제가 발생했습니다:\n{e}"))
-                    self.root.after(0, lambda: self.btn_bot.config(text="🤖 AUTO HUNT (봇 가동)"))
-                    self.root.after(0, lambda: self.lbl_bot_status.config(text="[BOT: ERROR]", foreground="red"))
+                    print(f"Bot Loop Error: {e}")
+                    self.root.after(0, lambda: self.btn_bot.config(text="ERROR"))
 
-            # GUI 업데이트
+            # 5. UI 갱신
             self.root.after(0, self.update_gui, frame, entropy, active_skill, kill_count, px, py)
             time.sleep(0.033)
 
