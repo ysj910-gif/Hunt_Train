@@ -1,86 +1,21 @@
+# bot_runner.py
 import time
-import serial
-import joblib
-import pandas as pd
-import cv2
-import numpy as np
 import threading
-import mss
-import pygetwindow as gw
-import ctypes
-from ctypes import wintypes
+import pandas as pd
+import joblib
 import config
-
-# 윈도우 좌표 계산용 (GUI와 동일한 로직 사용)
-user32 = ctypes.windll.user32
-
-class RECT(ctypes.Structure):
-    _fields_ = [("left", wintypes.LONG), ("top", wintypes.LONG),
-                ("right", wintypes.LONG), ("bottom", wintypes.LONG)]
-
-def get_client_area_on_screen(hwnd):
-    rect = RECT()
-    user32.GetClientRect(hwnd, ctypes.byref(rect))
-    pt = wintypes.POINT(0, 0)
-    user32.ClientToScreen(hwnd, ctypes.byref(pt))
-    return pt.x, pt.y, rect.right - rect.left, rect.bottom - rect.top
-
-class ArduinoController:
-    def __init__(self):
-        self.ser = None
-        self.pressed_keys = set()
-
-    def connect(self, port, baudrate=115200):
-        try:
-            self.ser = serial.Serial(port, baudrate, timeout=0.1)
-            time.sleep(2) 
-            return True
-        except Exception as e:
-            print(f"Arduino Connection Error: {e}")
-            return False
-
-    def send_command(self, action, key):
-        if self.ser is None: return
-        try:
-            self.ser.write(f"{action}{key}\n".encode())
-        except: pass
-
-    def update_keys(self, target_keys_str):
-        if target_keys_str == 'None' or pd.isna(target_keys_str):
-            new_keys = set()
-        else:
-            new_keys = set(target_keys_str.split('+'))
-
-        for k in list(self.pressed_keys):
-            if k not in new_keys:
-                self.send_command('R', k)
-                self.pressed_keys.remove(k)
-        
-        for k in new_keys:
-            if k not in self.pressed_keys:
-                self.send_command('P', k)
-                self.pressed_keys.add(k)
-
-    def release_all(self):
-        if self.ser:
-            try:
-                self.ser.write(b'S\n')
-                self.pressed_keys.clear()
-            except: pass
-    
-    def close(self):
-        if self.ser:
-            self.release_all()
-            self.ser.close()
-            self.ser = None
+from modules.input import InputHandler
 
 class BotRunner:
     def __init__(self):
-        self.arduino = ArduinoController()
         self.model = None
         self.is_running = False
         self.thread = None
         self.vision = None
+        
+        self.input_handler = InputHandler()
+        self.pressed_keys = set()
+        
         self.offset_x = 0
         self.offset_y = 0
 
@@ -89,87 +24,79 @@ class BotRunner:
             self.model = joblib.load(path)
             return True, "모델 로드 성공"
         except Exception as e:
-            return False, str(e)
+            return False, f"모델 로드 실패: {e}"
 
-    def connect_arduino(self, port):
-        if self.arduino.connect(port):
-            return True, "아두이노 연결 성공"
-        return False, "연결 실패"
-
-    def start(self, vision_engine, offset_x, offset_y):
+    def start(self, vision_engine, offset_x=0, offset_y=0):
         if self.is_running: return
-        if not self.model or not self.arduino.ser:
-            raise Exception("모델 또는 아두이노가 준비되지 않았습니다.")
-
+        if self.model is None:
+            raise Exception("모델이 준비되지 않았습니다.")
+            
         self.vision = vision_engine
         self.offset_x = offset_x
         self.offset_y = offset_y
         self.is_running = True
+        
         self.thread = threading.Thread(target=self._loop, daemon=True)
         self.thread.start()
+        print(f"▶️ 봇 시작 (Offset: {offset_x}, {offset_y})")
 
     def stop(self):
         self.is_running = False
         if self.thread:
             self.thread.join(timeout=1.0)
-        self.arduino.release_all()
+        self.release_all_keys()
+        print("⏹️ 봇 중지")
+
+    def update_key_state(self, action_str):
+        if action_str == 'None' or pd.isna(action_str):
+            target_keys = set()
+        else:
+            target_keys = set(action_str.split('+'))
+
+        # Release
+        for k in list(self.pressed_keys):
+            if k not in target_keys:
+                self.input_handler.release(k)
+                self.pressed_keys.remove(k)
+        
+        # Press
+        for k in target_keys:
+            if k not in self.pressed_keys:
+                self.input_handler.hold(k)
+                self.pressed_keys.add(k)
+
+    def release_all_keys(self):
+        self.input_handler.release_all()
+        self.pressed_keys.clear()
 
     def _loop(self):
-        with mss.mss() as sct:
-            while self.is_running:
-                try:
-                    # 1. 화면 캡처 (GUI와 동일한 로직)
-                    windows = gw.getWindowsWithTitle('MapleStory')
-                    if not windows:
-                        time.sleep(1); continue
-                    
-                    win = windows[0]
-                    c_left, c_top, c_w, c_h = get_client_area_on_screen(win._hWnd)
-                    
-                    capture_roi = {
-                        "top": c_top + config.MINIMAP_ROI['top'],
-                        "left": c_left + config.MINIMAP_ROI['left'],
-                        "width": config.MINIMAP_ROI['width'],
-                        "height": config.MINIMAP_ROI['height']
-                    }
-                    
-                    img = np.array(sct.grab(capture_roi))
-                    frame = cv2.cvtColor(img, cv2.COLOR_BGRA2BGR)
+        while self.is_running:
+            try:
+                # VisionSystem에서 화면과 정보를 한 번에 받아옴
+                frame, entropy, kill_count, raw_px, raw_py = self.vision.capture_and_analyze()
 
-                    # 2. 정보 추출
-                    mask = self.vision.get_character_mask(frame)
-                    M = cv2.moments(mask)
-                    if M["m00"] != 0:
-                        raw_x = int(M["m10"] / M["m00"])
-                        raw_y = int(M["m01"] / M["m00"])
-                    else:
-                        raw_x, raw_y = 0, 0
-                    
-                    # 보정된 좌표 사용
-                    player_x = raw_x - self.offset_x
-                    player_y = raw_y - self.offset_y
+                # 화면이 안 잡혔거나(검은색 0,0,0) 캐릭터를 못 찾은 경우(0,0) 대기
+                if frame is None or frame.size == 0:
+                    time.sleep(0.5)
+                    continue
 
-                    # 엔트로피 계산
-                    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-                    hist = cv2.calcHist([gray], [0], None, [256], [0, 256])
-                    hist_norm = hist.ravel() / hist.sum()
-                    hist_norm = hist_norm[hist_norm > 0]
-                    entropy = - (hist_norm * np.log2(hist_norm)).sum() * 10000
+                # 봇 로직 실행
+                player_x = raw_px - self.offset_x
+                player_y = raw_py - self.offset_y
+                current_platform_id = -1 
 
-                    # 3. 예측 및 아두이노 전송
-                    # 학습 때와 동일한 Feature 순서여야 함
-                    features = pd.DataFrame([[player_x, player_y, entropy]], 
-                                          columns=['player_x', 'player_y', 'entropy'])
-                    action = self.model.predict(features)[0]
-                    self.arduino.update_keys(action)
+                features = pd.DataFrame(
+                    [[player_x, player_y, entropy, current_platform_id]], 
+                    columns=['player_x', 'player_y', 'entropy', 'platform_id']
+                )
 
-                    # 디버그용 (옵션)
-                    # print(f"Pos: {player_x},{player_y} Act: {action}")
+                action = self.model.predict(features)[0]
+                self.update_key_state(action)
 
-                    time.sleep(0.05) # 약 20 FPS
+                time.sleep(0.05) 
 
-                except Exception as e:
-                    print(f"Bot Loop Error: {e}")
-                    time.sleep(1)
+            except Exception as e:
+                print(f"❌ Bot Loop Error: {e}")
+                time.sleep(1)
         
-        self.arduino.release_all()
+        self.release_all_keys()
