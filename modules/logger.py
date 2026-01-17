@@ -10,21 +10,21 @@ class DataLogger:
         if not os.path.exists("data"):
             os.makedirs("data")
             
-        # 파일명: data/Bishop_20231025_1230.csv (직업명 포함)
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        clean_job = "".join(x for x in job_name if x.isalnum()) # 특수문자 제거
+        clean_job = "".join(x for x in job_name if x.isalnum())
         if not clean_job: clean_job = "NoName"
             
         self.filepath = f"data/{clean_job}_{timestamp}.csv"
         
-        # CSV 헤더 (action -> skill_name으로 변경)
+        # [수정] CSV 헤더에 좌표(player_x, player_y) 추가
         self.headers = [
             "timestamp", 
             "entropy",       
-            "ult_ready",     
-            "sub_ready",     
-            "skill_name",    # 변경됨: 사용한 스킬 이름
-            "key_pressed",   # 참고용: 실제 누른 키
+            "skill_name",    
+            "key_pressed",   
+            "active_skills", 
+            "player_x",      # [신규]
+            "player_y",      # [신규]
             "kill_count",    
             "kill_reward"    
         ]
@@ -36,31 +36,38 @@ class DataLogger:
         self.last_kills = 0
         print(f"✅ 데이터 수집 시작: {self.filepath}")
 
-    def log_step(self, entropy, skill_manager, skill_name, key_char, current_kills):
-        """
-        한 번의 행동(프레임)마다 데이터를 저장함
-        """
-        # 보상 계산
+    # [수정] 인자에 px, py 추가
+    def log_step(self, entropy, skill_manager, skill_name, key_char, px, py, current_kills):
         reward = max(0, current_kills - self.last_kills)
         
-        # 쿨타임 상태 (Role 기반 확인)
-        ult_ready = 1 if skill_manager.is_ready("ultimate") else 0
-        sub_ready = 1 if skill_manager.is_ready("sub_attack") else 0
+        # 활성 스킬(설치기) 목록 만들기
+        active_list = []
+        # skill_manager에 durations 속성이 있는지 확인 (안전장치)
+        if hasattr(skill_manager, 'durations'): 
+            for s_name in skill_manager.durations:
+                if skill_manager.is_active(s_name):
+                    active_list.append(s_name)
         
-        # 데이터 행 생성
+        active_str = "|".join(active_list) if active_list else "None"
+        
+        # [수정] 좌표 데이터 포함하여 저장
         row = [
             time.time(),
             f"{entropy:.2f}",
-            ult_ready,
-            sub_ready,
-            skill_name,   # Genesis, Teleport 등
-            key_char,     # r, e, q 등
+            skill_name,
+            key_char,
+            active_str,
+            px, # [신규] 좌표 X
+            py, # [신규] 좌표 Y
             current_kills,
             reward
         ]
         
-        with open(self.filepath, "a", newline="", encoding="utf-8") as f:
-            writer = csv.writer(f)
-            writer.writerow(row)
+        try:
+            with open(self.filepath, "a", newline="", encoding="utf-8") as f:
+                writer = csv.writer(f)
+                writer.writerow(row)
+        except Exception as e:
+            print(f"로그 저장 실패: {e}")
             
         self.last_kills = current_kills

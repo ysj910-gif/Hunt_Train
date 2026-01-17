@@ -1,20 +1,37 @@
-import numpy as np
+# config.py
 
-# 기본 데이터 저장 경로 및 설정 (GUI에서 변경 가능)
-DATA_DIR = "training_data_v2"
-SAVE_NAME = "recording.csv"
-JOB = "전사"
-MOVE_TYPE = "DJ" # DJ: 더블점프, TP: 텔레포트
-TARGET_RECORD_TIME = 600
-FPS_LIMIT = 10
+# 파일 경로
+CONFIG_FILE = "hunter_config.json"
 
-# 미니맵 ROI (창 내부에서의 상대 좌표: left, top, width, height)
-# 초기값은 0이며 GUI의 '미니맵 영역 지정' 버튼으로 설정함
-MINIMAP_ROI = {'left': 0, 'top': 0, 'width': 0, 'height': 0}
+# 기본 캡처 영역 (x, y, w, h)
+DEFAULT_CAPTURE_AREA = {"top": 100, "left": 100, "width": 640, "height": 360}
 
-# 캐릭터 탐지 색상 (노란색 점)
-YELLOW_HSV_LOWER = np.array([25, 150, 150])
-YELLOW_HSV_UPPER = np.array([35, 255, 255])
+# 기본 스킬 쿨타임 (초)
+DEFAULT_COOLDOWNS = {
+    "ultimate": 30.0,
+    "sub_attack": 8.0,
+    "buff": 180.0,
+    "rope": 0.0,
+    "jump": 0.0,
+    "attack": 0.0
+}
 
-# 조작키 매핑
-KEY_ACTION_MAP = {}
+# 기본 키 매핑
+DEFAULT_KEY_MAP = {
+    "ultimate": "r",
+    "sub_attack": "a",
+    "buff": "1",
+    "rope": "c",
+    "jump": "space",
+    "attack": "ctrl"
+}
+
+# config.py
+
+# ... (기존 설정들) ...
+
+# [하드웨어 통신 설정]
+# 윈도우: "COM3", "COM4" 등 (장치 관리자에서 확인)
+# 맥/리눅스: "/dev/ttyUSB0" 등
+SERIAL_PORT = "COM9"  
+BAUD_RATE = 115200

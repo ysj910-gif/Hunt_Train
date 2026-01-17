@@ -7,13 +7,12 @@ from ctypes import wintypes
 import pygetwindow as gw
 import config
 import time
-import pytesseract # pip install pytesseract
+import pytesseract
 
-# === Tesseract 설치 경로 설정 (사용자 환경에 맞게 수정 필요) ===
-# 윈도우 환경변수에 등록되어 있다면 주석 처리해도 됩니다.
+# Tesseract 경로
 pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
 
-# === [좌표 계산용 구조체] ===
+# 좌표 계산용 구조체
 user32 = ctypes.windll.user32
 class RECT(ctypes.Structure):
     _fields_ = [("left", wintypes.LONG), ("top", wintypes.LONG), ("right", wintypes.LONG), ("bottom", wintypes.LONG)]
@@ -30,84 +29,109 @@ class VisionSystem:
         self.capture_area = config.DEFAULT_CAPTURE_AREA
         self.window_found = False
         
-        # OCR 관련 변수
+        self.kill_roi = None 
+        self.minimap_roi = None # [신규] 미니맵 영역
+        
         self.last_ocr_time = 0
         self.current_kill_count = 0
+        self.player_pos = (0, 0)
 
     def find_maple_window(self):
         try:
             windows = gw.getWindowsWithTitle('MapleStory')
             if not windows:
-                print("❌ 'MapleStory' 창을 찾을 수 없습니다.")
+                print("Error: 'MapleStory' window not found.")
                 return False
             win = windows[0]
             if win.isMinimized: win.restore()
             
-            # 클라이언트 영역 정밀 계산
             rect = get_client_area_on_screen(win._hWnd)
             if not rect: return False
             
             x, y, w, h = rect
             self.capture_area = {"top": y, "left": x, "width": w, "height": h}
             self.window_found = True
-            print(f"✅ 메이플 창 발견 (OCR 준비 완료): {self.capture_area}")
+            print(f"Maple Window Found: {self.capture_area}")
             return True
         except Exception as e:
-            print(f"⚠️ 창 찾기 오류: {e}")
+            print(f"Window Find Error: {e}")
             return False
-        
+
     def set_roi(self, rect):
-        """GUI에서 지정한 ROI 영역 저장 (x, y, w, h)"""
         self.kill_roi = rect
-        print(f"ROI 설정됨: {self.kill_roi}")
+        print(f"Kill ROI Set: {self.kill_roi}")
+
+    def set_minimap_roi(self, rect):
+        """[신규] 미니맵 영역 설정"""
+        self.minimap_roi = rect
+        print(f"Minimap ROI Set: {self.minimap_roi}")
+
+    def get_player_position(self, frame):
+        """[신규] 미니맵 ROI 안에서 노란색(내 캐릭터) 위치 찾기"""
+        if not self.minimap_roi:
+            return 0, 0
+            
+        x, y, w, h = self.minimap_roi
+        h_img, w_img = frame.shape[:2]
+        if x < 0 or y < 0 or x+w > w_img or y+h > h_img:
+            return 0, 0
+            
+        # 1. 미니맵만 잘라내기
+        minimap_img = frame[y:y+h, x:x+w]
+        
+        # 2. 노란색 추출 (HSV 색상 공간 사용)
+        hsv = cv2.cvtColor(minimap_img, cv2.COLOR_BGR2HSV)
+        
+        # 메이플 미니맵의 노란색 범위
+        lower_yellow = np.array([20, 100, 100])
+        upper_yellow = np.array([40, 255, 255])
+        
+        mask = cv2.inRange(hsv, lower_yellow, upper_yellow)
+        
+        # 3. 무게중심(Centroid) 찾기
+        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        
+        if contours:
+            c = max(contours, key=cv2.contourArea)
+            M = cv2.moments(c)
+            if M["m00"] > 0:
+                cx = int(M["m10"] / M["m00"])
+                cy = int(M["m01"] / M["m00"])
+                self.player_pos = (cx, cy)
+                return cx, cy
+        
+        return self.player_pos
 
     def get_kill_count_ocr(self, frame):
-        """ 지정된 영역만 잘라내서 숫자로 변환 """
         if not self.kill_roi:
             return self.current_kill_count
             
-        # 0.5초에 한 번만 인식 (부하 감소)
         if time.time() - self.last_ocr_time < 0.5:
             return self.current_kill_count
         
         self.last_ocr_time = time.time()
         
         try:
-            # 1. ROI 영역 자르기
             x, y, w, h = self.kill_roi
-            # 프레임 범위를 벗어나지 않게 클리핑
             h_img, w_img = frame.shape[:2]
             if x < 0 or y < 0 or x+w > w_img or y+h > h_img:
                 return self.current_kill_count
                 
             roi = frame[y:y+h, x:x+w]
-            
-            # 2. 이미지 전처리 (인식률 높이기 핵심)
-            # 흑백 변환
+            roi = cv2.resize(roi, None, fx=4, fy=4, interpolation=cv2.INTER_CUBIC)
             gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+            _, thresh = cv2.threshold(gray, 130, 255, cv2.THRESH_BINARY)
+            thresh = cv2.bitwise_not(thresh)
             
-            # 크기 확대 (작은 글씨 인식용, 3배 확대)
-            gray = cv2.resize(gray, None, fx=3, fy=3, interpolation=cv2.INTER_CUBIC)
+            config_tess = '--psm 7 -c tessedit_char_whitelist=0123456789'
+            text = pytesseract.image_to_string(thresh, config=config_tess)
+            text_clean = text.strip()
             
-            # 이진화 (글자는 검정, 배경은 흰색, 혹은 그 반대로 확실하게 분리)
-            # 메이플 전투분석창은 어두운 배경에 흰 글씨 -> 반전시켜서 흰 배경에 검은 글씨로 만듦 (Tesseract 선호)
-            gray = cv2.bitwise_not(gray)
-            _, thresh = cv2.threshold(gray, 100, 255, cv2.THRESH_BINARY)
-            
-            # 3. Tesseract 실행 (숫자 모드)
-            # --psm 7: 이미지를 한 줄의 텍스트로 취급
-            # digits: 숫자만 인식하도록 제한
-            text = pytesseract.image_to_string(thresh, config='--psm 7 outputbase digits')
-            
-            # 4. 숫자 추출
-            digits = ''.join(filter(str.isdigit, text))
-            
-            if digits:
-                self.current_kill_count = int(digits)
-                # print(f"인식된 숫자: {self.current_kill_count}") # 디버깅용
+            if text_clean.isdigit():
+                self.current_kill_count = int(text_clean)
+                # print(f"Kill Count: {self.current_kill_count}")
                 
         except Exception as e:
-            # print(f"OCR 에러: {e}")
             pass
             
         return self.current_kill_count
@@ -115,7 +139,7 @@ class VisionSystem:
     def capture_and_analyze(self):
         if not self.window_found:
             if not self.find_maple_window():
-                return np.zeros((100, 100, 3), dtype=np.uint8), 0, 0 # kill_count 추가
+                return np.zeros((100, 100, 3), dtype=np.uint8), 0, 0, 0, 0
         
         try:
             with mss.mss() as sct:
@@ -123,15 +147,15 @@ class VisionSystem:
             
             frame = cv2.cvtColor(img_np, cv2.COLOR_BGRA2BGR)
             
-            # 엔트로피 계산
             gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
             edges = cv2.Canny(gray, 100, 200)
             entropy_score = np.sum(edges) / 255
             
-            # OCR 수행
             kill_count = self.get_kill_count_ocr(frame)
+            px, py = self.get_player_position(frame) # [신규] 좌표 반환
             
-            return frame, entropy_score, kill_count # 3개 반환
+            return frame, entropy_score, kill_count, px, py 
             
         except Exception as e:
+            print(f"Capture Error: {e}")
             return np.zeros((100, 100, 3), dtype=np.uint8), 0, 0

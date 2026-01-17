@@ -18,30 +18,26 @@ import config
 class MapleHunterUI:
     def __init__(self, root):
         self.root = root
-        self.root.title("Maple Data Recorder (Custom Skill Ver.)")
-        self.root.geometry("1200x850")
+        self.root.title("Maple Data Recorder (Physics Engine Ver.)")
+        self.root.geometry("1200x900")
 
         self.vision = VisionSystem()
         self.skill_manager = SkillManager()
         self.logger = None 
         self.input_handler = InputHandler()
         
+        # Brain 인스턴스 (발판 정보 저장용) - 모듈 구조에 따라 import 필요
+        # modules.brain에서 StrategyBrain도 가져와야 함 (상단 import 확인)
+        from modules.brain import StrategyBrain 
+        self.brain = StrategyBrain(self.skill_manager)
+
         self.is_recording = False
-        self.current_key = "None"
+        self.held_keys = set()
         
         # 동적 스킬 행들을 저장할 리스트
-        # 예: [{"frame": Frame, "name": Entry, "key": Entry, "cd": Entry}, ...]
         self.skill_rows = []
         self.key_to_skill_map = {} 
-
-        self.setup_ui()
-        self.load_settings()
         
-        self.listener = keyboard.Listener(on_press=self.on_key_press)
-        self.listener.start()
-
-        threading.Thread(target=self.loop, daemon=True).start()
-
         # [신규] 맵 오프셋 (픽셀 단위 조정)
         self.map_offset_x = 0
         self.map_offset_y = 0
@@ -49,21 +45,41 @@ class MapleHunterUI:
         self.setup_ui()
         self.load_settings()
         
-        self.listener = keyboard.Listener(on_press=self.on_key_press)
+        self.listener = keyboard.Listener(
+            on_press=self.on_key_press,
+            on_release=self.on_key_release
+        )
         self.listener.start()
 
         threading.Thread(target=self.loop, daemon=True).start()
 
+
+    # [기존] on_key_press 삭제 후 아래 3개 함수로 대체
+
+# [신규] 키를 누를 때 Set에 추가
     def on_key_press(self, key):
         if self.is_recording:
             try:
-                if hasattr(key, 'char') and key.char:
-                    self.current_key = key.char
-                else:
-                    self.current_key = str(key).replace("Key.", "")
-            except:
-                self.current_key = "Unknown"
+                k = self.get_key_name(key)
+                self.held_keys.add(k)
+            except: pass
 
+# [신규] 키를 뗄 때 Set에서 제거
+    def on_key_release(self, key):
+        if self.is_recording:
+            try:
+                k = self.get_key_name(key)
+                if k in self.held_keys:
+                    self.held_keys.remove(k)
+            except: pass
+
+# [신규] 키 이름 변환 헬퍼 함수
+    def get_key_name(self, key):
+        if hasattr(key, 'char') and key.char:
+            return key.char.lower()
+        else:
+            return str(key).replace("Key.", "")
+    
     def setup_ui(self):
         paned = ttk.PanedWindow(self.root, orient=tk.HORIZONTAL)
         paned.pack(fill="both", expand=True)
@@ -90,20 +106,28 @@ class MapleHunterUI:
         self.cooldown_frame = ttk.Frame(left)
         self.cooldown_frame.pack(fill="x", pady=5)
 
-        # === [Right] 설정 ===
+        # === [Right] 설정 (탭 기능 복구) ===
+        tab_control = ttk.Notebook(right)
+        tab_skill = ttk.Frame(tab_control)
+        tab_map = ttk.Frame(tab_control) # 여기서 tab_map이 정의됩니다!
         
+        tab_control.add(tab_skill, text='Skills & Info')
+        tab_control.add(tab_map, text='Map & Offset')
+        tab_control.pack(expand=1, fill="both")
+
+        # --- [Tab 1: Skills & Info] ---
         # 1. 직업 정보
-        job_frame = ttk.LabelFrame(right, text="Player Info")
+        job_frame = ttk.LabelFrame(tab_skill, text="Player Info")
         job_frame.pack(fill="x", pady=5)
         ttk.Label(job_frame, text="Job Class:").pack(side="left", padx=5)
         self.entry_job = ttk.Entry(job_frame)
         self.entry_job.pack(side="left", fill="x", expand=True, padx=5)
 
         # 2. 스킬 설정 (동적 리스트)
-        setting_frame = ttk.LabelFrame(right, text="Custom Skills")
+        setting_frame = ttk.LabelFrame(tab_skill, text="Custom Skills")
         setting_frame.pack(fill="both", expand=True, pady=5)
 
-        # 스크롤 가능한 캔버스 영역 만들기 (스킬이 많아질 경우 대비)
+        # 스크롤 가능한 캔버스 영역
         canvas_scroll = tk.Canvas(setting_frame, height=300)
         scrollbar = ttk.Scrollbar(setting_frame, orient="vertical", command=canvas_scroll.yview)
         self.skill_list_frame = ttk.Frame(canvas_scroll)
@@ -125,7 +149,14 @@ class MapleHunterUI:
         ttk.Label(h_frame, text="Key", width=6, font="bold").pack(side="left", padx=2)
         ttk.Label(h_frame, text="CD(s)", width=6, font="bold").pack(side="left", padx=2)
 
-# --- [Tab 2: Map & Offset] ---
+        # 스킬 제어 버튼
+        skill_btn_frame = ttk.Frame(tab_skill)
+        skill_btn_frame.pack(fill="x", pady=5)
+        ttk.Button(skill_btn_frame, text="+ Add Skill", command=self.add_skill_row).pack(fill="x", pady=2)
+        ttk.Button(skill_btn_frame, text="💾 Save Config & Update", command=self.save_settings).pack(fill="x", pady=5)
+
+
+        # --- [Tab 2: Map & Offset] ---
         
         # 1. 맵 로드 버튼
         map_load_frame = ttk.LabelFrame(tab_map, text="Map File (JSON)")
@@ -155,23 +186,26 @@ class MapleHunterUI:
         # 리셋 버튼
         ttk.Button(offset_frame, text="Reset Offset", command=lambda: self.adjust_offset(0, 0, reset=True)).pack(pady=10)
         
-        ttk.Label(offset_frame, text="* JSON 발판 좌표를 화면에 맞게 이동시킵니다.", foreground="gray").pack()       
-# 3. 제어 버튼 영역 (control_frame 안쪽)
-        control_frame = ttk.Frame(right)
-        control_frame.pack(fill="x", pady=5)
-        
-        ttk.Button(control_frame, text="+ Add Skill", command=self.add_skill_row).pack(fill="x", pady=2)
-        ttk.Button(control_frame, text="💾 Save Config & Update", command=self.save_settings).pack(fill="x", pady=5)
+        ttk.Label(offset_frame, text="* JSON 발판 좌표를 화면에 맞게 이동시킵니다.", foreground="gray").pack()
 
-        self.btn_find_win = ttk.Button(right, text="1. 🔍 메이플 창 찾기", command=self.find_window_action)
-        self.btn_find_win.pack(fill="x", pady=(10, 5))
+        # --- [공통 하단 버튼] ---
+        bottom_frame = ttk.Frame(right)
+        bottom_frame.pack(side="bottom", fill="x", pady=10)
+
+        self.btn_find_win = ttk.Button(bottom_frame, text="1. 🔍 메이플 창 찾기", command=self.find_window_action)
+        self.btn_find_win.pack(fill="x", pady=2)
         
-        # [추가된 버튼] 킬 카운트 영역 지정
-        self.btn_set_roi = ttk.Button(right, text="🎯 킬 카운트 영역 지정 (드래그)", command=self.open_roi_selector)
-        self.btn_set_roi.pack(fill="x", pady=5)
+        # [기존] 킬 카운트 영역
+        self.btn_set_roi = ttk.Button(bottom_frame, text="🎯 킬 카운트 영역 지정", command=lambda: self.open_roi_selector("kill"))
+        self.btn_set_roi.pack(fill="x", pady=2)
+
+        # [신규] 미니맵 영역
+        self.btn_set_minimap = ttk.Button(bottom_frame, text="🗺️ 미니맵 영역 지정 (노란점 추적)", command=lambda: self.open_roi_selector("minimap"))
+        self.btn_set_minimap.pack(fill="x", pady=2)
         
-        self.btn_record = ttk.Button(right, text="2. ⏺ REC (데이터 녹화 시작)", command=self.toggle_recording)
+        self.btn_record = ttk.Button(bottom_frame, text="2. ⏺ REC (데이터 녹화 시작)", command=self.toggle_recording)
         self.btn_record.pack(fill="x", ipady=10, pady=5)
+
 
     def open_map_file(self):
         file_path = filedialog.askopenfilename(
@@ -197,26 +231,19 @@ class MapleHunterUI:
         
         self.lbl_offset.config(text=f"Offset: (X={self.map_offset_x}, Y={self.map_offset_y})")
 
-    # --- [기존 로직 및 스킬 관련 메서드] ---
-        
-    def add_skill_row(self, name="", key="", cd="0.0"):
-        """스킬 입력 줄 하나를 추가합니다."""
+    def add_skill_row(self, name="", key="", cd="0.0", dur="0.0"):
         row_f = ttk.Frame(self.skill_list_frame)
         row_f.pack(fill="x", pady=2)
 
-        e_name = ttk.Entry(row_f, width=15)
-        e_name.pack(side="left", padx=2)
-        e_name.insert(0, name)
+        e_name = ttk.Entry(row_f, width=15); e_name.pack(side="left", padx=2); e_name.insert(0, name)
+        e_key = ttk.Entry(row_f, width=6); e_key.pack(side="left", padx=2); e_key.insert(0, key)
+        
+        # 쿨타임
+        e_cd = ttk.Entry(row_f, width=6); e_cd.pack(side="left", padx=2); e_cd.insert(0, cd)
+        
+        # [신규] 지속시간 (Duration)
+        e_dur = ttk.Entry(row_f, width=6); e_dur.pack(side="left", padx=2); e_dur.insert(0, dur)
 
-        e_key = ttk.Entry(row_f, width=6)
-        e_key.pack(side="left", padx=2)
-        e_key.insert(0, key)
-
-        e_cd = ttk.Entry(row_f, width=6)
-        e_cd.pack(side="left", padx=2)
-        e_cd.insert(0, cd)
-
-        # 삭제 버튼
         btn_del = ttk.Button(row_f, text="X", width=3, command=lambda: self.delete_skill_row(row_f))
         btn_del.pack(side="left", padx=5)
 
@@ -224,30 +251,34 @@ class MapleHunterUI:
             "frame": row_f,
             "name": e_name,
             "key": e_key,
-            "cd": e_cd
+            "cd": e_cd,
+            "dur": e_dur # 저장
         })
 
     def delete_skill_row(self, row_frame):
         """해당 스킬 줄을 삭제합니다."""
         row_frame.destroy()
-        # 리스트에서도 제거
         self.skill_rows = [r for r in self.skill_rows if r["frame"] != row_frame]
 
     def load_settings(self):
         data = utils.load_config()
         self.entry_job.insert(0, data.get("job_name", "Adventurer"))
         
+        # 맵 오프셋 로드
+        self.map_offset_x = data.get("map_offset_x", 0)
+        self.map_offset_y = data.get("map_offset_y", 0)
+        self.lbl_offset.config(text=f"Offset: (X={self.map_offset_x}, Y={self.map_offset_y})")
+
+        mapping = data.get("mapping", {})
+        
         # 기존 스킬 행들 모두 삭제 (초기화)
         for r in self.skill_rows:
             r["frame"].destroy()
         self.skill_rows = []
 
-        mapping = data.get("mapping", {})
-        
-        # 저장된 스킬이 없으면 기본값(예시) 몇 개 추가
+        # 저장된 스킬이 없으면 기본값(예시) 추가
         if not mapping:
             self.add_skill_row("Genesis", "r", "30.0")
-            self.add_skill_row("Heal", "d", "0.0")
         else:
             for skill_name, info in mapping.items():
                 self.add_skill_row(skill_name, info.get("key", ""), str(info.get("cd", 0)))
@@ -267,52 +298,56 @@ class MapleHunterUI:
         data = {
             "job_name": self.entry_job.get(),
             "threshold": 3000,
-            "mapping": mapping
+            "mapping": mapping,
+            "map_offset_x": self.map_offset_x, # 오프셋도 함께 저장
+            "map_offset_y": self.map_offset_y
         }
         utils.save_config(data)
         self.update_logic_from_ui()
         messagebox.showinfo("Saved", "설정이 저장되고 스킬 리스트가 업데이트되었습니다.")
 
     def update_logic_from_ui(self):
-        """UI에 입력된 내용을 실제 로직(Brain, Input, Map)에 반영"""
         self.key_to_skill_map.clear()
         new_cooldowns = {}
+        new_durations = {} # 신규
         new_key_map = {}
 
-        # 1. 스킬 매핑 및 쿨타임 정보 추출
         for r in self.skill_rows:
             s_name = r["name"].get().strip()
             s_key = r["key"].get().strip().lower()
             s_cd = r["cd"].get().strip()
+            s_dur = r["dur"].get().strip() # 지속시간 읽기
 
             if s_name:
                 cd_val = float(s_cd) if s_cd else 0.0
+                dur_val = float(s_dur) if s_dur else 0.0 # 실수 변환
+                
                 new_cooldowns[s_name] = cd_val
+                new_durations[s_name] = dur_val # 딕셔너리에 저장
+                
                 if s_key:
                     self.key_to_skill_map[s_key] = s_name
                     new_key_map[s_name] = s_key
 
-        # 2. SkillManager 업데이트
-        self.skill_manager.update_skill_list(new_cooldowns)
-        
-        # 3. InputHandler 업데이트
+        # SkillManager 업데이트 (인자 2개 전달)
+        self.skill_manager.update_skill_list(new_cooldowns, new_durations)
         self.input_handler.update_key_map(new_key_map)
         
-        # 4. 왼쪽 화면의 쿨타임 바 다시 그리기
-        for widget in self.cooldown_frame.winfo_children():
-            widget.destroy()
-            
+        # (쿨타임 바 다시 그리는 코드 유지...)
+        for widget in self.cooldown_frame.winfo_children(): widget.destroy()
         self.progress_bars = {}
         for skill_name in new_cooldowns:
-            if new_cooldowns[skill_name] > 0: # 쿨타임이 있는 스킬만 표시
+            if new_cooldowns[skill_name] > 0:
                 f = ttk.Frame(self.cooldown_frame)
                 f.pack(fill="x", pady=1)
-                ttk.Label(f, text=skill_name, width=10, anchor="w").pack(side="left")
+                
+                # [시각 효과] 설치 중이면 글자색을 다르게 표시
+                lbl_color = "green" if self.skill_manager.is_active(skill_name) else "black"
+                
+                ttk.Label(f, text=skill_name, width=10, anchor="w", foreground=lbl_color).pack(side="left")
                 pb = ttk.Progressbar(f, length=150)
                 pb.pack(side="right", fill="x", expand=True)
                 self.progress_bars[skill_name] = pb
-
-        print(f"매핑 업데이트 완료: {len(new_cooldowns)}개 스킬")
 
     def toggle_recording(self):
         if self.is_recording:
@@ -333,39 +368,44 @@ class MapleHunterUI:
 
     def loop(self):
         while True:
+            # 1. 화면 캡처 및 정보 분석 (좌표 포함)
             if self.vision.window_found:
-                frame, entropy, kill_count = self.vision.capture_and_analyze()
+                # frame, entropy, kill_count, player_x, player_y 반환
+                frame, entropy, kill_count, px, py = self.vision.capture_and_analyze()
             else:
-                frame, entropy, kill_count = None, 0, 0
-                time.sleep(0.5)
+                frame, entropy, kill_count, px, py = None, 0, 0, 0, 0
+                time.sleep(0.5) # 창을 못 찾았을 때는 천천히 대기
                 continue
 
-            # 키 -> 스킬 변환
-            skill_name = "Idle"
-            if self.current_key != "None":
-                skill_name = self.key_to_skill_map.get(self.current_key, f"Key:{self.current_key}")
-                
-                # [중요] 사용자가 키를 눌렀을 때 쿨타임 매니저에게 '사용했다'고 알림
-                # (그래야 화면에 쿨타임 바가 움직임)
-                if skill_name in self.skill_manager.cooldowns:
-                    self.skill_manager.use(skill_name)
-
-            if self.is_recording and self.logger:
-                # 로그 저장
-                self.logger.log_step(entropy, self.skill_manager, skill_name, self.current_key, kill_count)
-
-            self.root.after(0, self.update_gui, frame, entropy, skill_name, kill_count)
+            # 2. 현재 눌린 키 조합 문자열 생성 (예: "right+space", "None")
+            # held_keys는 set이므로 정렬(sorted)하여 일관된 순서로 저장
+            current_keys_str = "+".join(sorted(self.held_keys)) if self.held_keys else "None"
             
-            # 키 입력 초기화 (한 번 감지 후 리셋)
-            if self.current_key != "None":
-                 self.current_key = "None"
-                 
-            time.sleep(0.1)
+            # 3. 스킬 사용 감지 (화면 표시 및 쿨타임 갱신용)
+            # 현재 눌려있는 키 중에 매핑된 스킬이 있는지 확인
+            active_skill_name = "Idle"
+            for k in self.held_keys:
+                if k in self.key_to_skill_map:
+                    s_name = self.key_to_skill_map[k]
+                    self.skill_manager.use(s_name) # 사용 시점(last_used) 갱신
+                    active_skill_name = s_name
 
-    def update_gui(self, frame, entropy, skill_name, kill_count):
+            # 4. 데이터 로깅 (녹화 중일 때)
+            if self.is_recording and self.logger:
+                # 엔트로피, 스킬매니저, 활성스킬명, 키조합(문자열), 좌표X, 좌표Y, 킬카운트 저장
+                self.logger.log_step(entropy, self.skill_manager, active_skill_name, current_keys_str, px, py, kill_count)
+
+            # 5. GUI 업데이트 (메인 스레드로 요청)
+            self.root.after(0, self.update_gui, frame, entropy, current_keys_str, kill_count, px, py)
+            
+            # 6. 루프 속도 설정 (물리 데이터 수집을 위해 고속 모드)
+            # 0.03초 = 약 33 FPS (캐릭터의 미세한 위치 변화와 가속도를 담기 위함)
+            time.sleep(0.03)
+
+    def update_gui(self, frame, entropy, skill_name, kill_count, px, py):
         if frame is not None and frame.shape[0] > 0:
             # [발판 시각화] Brain에 로드된 발판이 있다면, 오프셋을 적용해 그립니다.
-            if self.brain.footholds:
+            if hasattr(self, 'brain') and self.brain.footholds:
                 for fh in self.brain.footholds:
                     # JSON: (x1, y1, x2, y2)
                     # 화면 표시: x + offset_x, y + offset_y
@@ -377,6 +417,13 @@ class MapleHunterUI:
                     # 빨간색 선 (두께 2)
                     cv2.line(frame, (x1, y1), (x2, y2), (0, 0, 255), 2)
 
+                if self.vision.minimap_roi and px > 0 and py > 0:
+                    mx, my, mw, mh = self.vision.minimap_roi
+                # 프레임 상의 절대 좌표
+                    cv2.circle(frame, (mx + px, my + py), 5, (0, 255, 0), -1)
+
+            frame_s = cv2.resize(frame, (640, 360))
+
             frame_s = cv2.resize(frame, (640, 360))
             img = ImageTk.PhotoImage(image=Image.fromarray(cv2.cvtColor(frame_s, cv2.COLOR_BGR2RGB)))
             self.canvas.create_image(0, 0, image=img, anchor="nw")
@@ -385,6 +432,7 @@ class MapleHunterUI:
         self.lbl_entropy.config(text=f"Entropy: {entropy:.0f}")
         self.lbl_action.config(text=f"Action: {skill_name}")
         self.lbl_kill.config(text=f"Kills: {kill_count}")
+        self.lbl_entropy.config(text=f"Ent: {entropy:.0f} | Pos: ({px},{py})")
 
         if hasattr(self, 'progress_bars'):
             for s_name, pb in self.progress_bars.items():
@@ -399,19 +447,21 @@ class MapleHunterUI:
         else:
             messagebox.showerror("실패", "메이플 창을 찾을 수 없습니다.")
 
-    def open_roi_selector(self):
+    def open_roi_selector(self, target="kill"):
         if not self.vision.window_found:
             messagebox.showwarning("경고", "먼저 '메이플 창 찾기'를 수행해주세요.")
             return
+        
+        self.roi_target = target # 무엇을 설정 중인지 저장
 
-        # 현재 화면 한 장 캡처
-        frame, _, _ = self.vision.capture_and_analyze()
+        frame, _, _, _, _ = self.vision.capture_and_analyze() # 5개 반환값 처리
         if frame is None: return
 
         # 새 창(Toplevel) 열기
         self.roi_win = Toplevel(self.root)
         self.roi_win.title("숫자 부분만 드래그하세요")
         self.roi_win.attributes('-topmost', True) # 맨 위에 표시
+        
 
         # 이미지를 Tkinter용으로 변환
         self.roi_cv_img = frame
@@ -435,7 +485,6 @@ class MapleHunterUI:
 
     def on_roi_press(self, event):
         self.roi_start = (event.x, event.y)
-        # 기존 사각형 삭제
         if self.roi_rect:
             self.roi_canvas.delete(self.roi_rect)
 
@@ -443,25 +492,39 @@ class MapleHunterUI:
         if self.roi_start:
             x0, y0 = self.roi_start
             x1, y1 = event.x, event.y
-            # 드래그 중인 사각형 그리기 (빨간색)
             if self.roi_rect:
                 self.roi_canvas.delete(self.roi_rect)
             self.roi_rect = self.roi_canvas.create_rectangle(x0, y0, x1, y1, outline="red", width=2)
 
     def on_roi_release(self, event):
         if self.roi_start:
-            x0, y0 = self.roi_start
-            x1, y1 = event.x, event.y
-            
-            # 좌표 정렬 (왼쪽위, 오른쪽아래)
-            x_start, x_end = sorted([x0, x1])
-            y_start, y_end = sorted([y0, y1])
-            
-            w = x_end - x_start
-            h = y_end - y_start
-            
-            if w > 5 and h > 5: # 너무 작은 영역 무시
-                # Vision 모듈에 ROI 전달
-                self.vision.set_roi((x_start, y_start, w, h))
-                messagebox.showinfo("설정 완료", f"영역이 설정되었습니다.\n좌표: {x_start}, {y_start}, {w}x{h}")
-                self.roi_win.destroy() # 창 닫기
+            try:
+                x0, y0 = self.roi_start
+                x1, y1 = event.x, event.y
+                
+                # 좌표 정렬 (왼쪽 위, 오른쪽 아래)
+                x_start, x_end = sorted([x0, x1])
+                y_start, y_end = sorted([y0, y1])
+                
+                w = x_end - x_start
+                h = y_end - y_start
+                
+                if w > 5 and h > 5:
+                    rect = (x_start, y_start, w, h)
+                    
+                    msg = ""
+                    if self.roi_target == "kill":
+                        self.vision.set_roi(rect)
+                        msg = "킬 카운트 영역이 설정되었습니다."
+                    elif self.roi_target == "minimap":
+                        # 만약 vision.py가 업데이트 안 됐다면 여기서 에러가 나서 except로 넘어갑니다.
+                        self.vision.set_minimap_roi(rect)
+                        msg = "미니맵 영역이 설정되었습니다.\n노란색 점을 추적합니다."
+                    
+                    messagebox.showinfo("설정 완료", f"{msg}\n좌표: {rect}")
+                    self.roi_win.destroy()
+                    
+            except Exception as e:
+                # [중요] 오류가 나면 침묵하지 않고 원인을 알려줌
+                messagebox.showerror("오류 발생", f"영역 설정 중 문제가 생겼습니다.\n\n원인: {e}\n\n(Tip: modules/vision.py 파일이 최신 버전인지 확인하세요)")
+                self.roi_win.destroy()
