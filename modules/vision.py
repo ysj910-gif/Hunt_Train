@@ -88,7 +88,7 @@ class VisionSystem:
             }
             self.window_found = True
             # 디버깅용 출력
-            # print(f"✅ Window Found: {self.capture_area}")
+            print(f"✅ Window Found: {self.capture_area}")
             return True
         except Exception as e:
             print(f"Window Find Error: {e}")
@@ -179,6 +179,6 @@ class VisionSystem:
             return frame, entropy, kill, px, py
             
         except Exception as e:
-            # print(f"Capture Error: {e}")
+            print(f"Capture Error: {e}")
             self.window_found = False # 다음 루프 때 다시 창을 찾도록 유도
             return np.zeros((100, 100, 3), dtype=np.uint8), 0, 0, 0, 0

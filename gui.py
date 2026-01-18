@@ -15,6 +15,7 @@ from modules.input import InputHandler
 from modules.logger import DataLogger
 from modules.agent import BotAgent  # [신규] 뇌 담당 Agent
 from modules.humanizer import Humanizer  # [추가]
+from modules.rune_solver import RuneManager  # [추가]
 import utils
 
 
@@ -29,10 +30,23 @@ class MapleHunterUI:
         self.skill_manager = SkillManager()
         self.input_handler = InputHandler()
         self.humanizer = Humanizer()
-        self.agent = BotAgent() # [신규] 여기서 Agent 생성
-        self.logger = None 
+        
+        # Agent 먼저 초기화
+        self.agent = BotAgent() 
 
+        self.rune_manager = RuneManager()
+        
+        # [★수정] UI가 아직 없으므로 print로만 출력하고, lbl_physics.config 코드는 삭제함
+        physics_file = "physics_hybrid_model.pth"
+        if self.rune_manager.load_physics(physics_file):
+            print(f"✅ 룬 이동용 물리 엔진({physics_file})이 로드되었습니다.")
+            # self.lbl_physics.config(...)  <-- [삭제] 이 줄이 에러 원인이었음!
+        else:
+            print(f"⚠️ 물리 엔진 파일({physics_file})이 없습니다. 'train_physics.py'를 실행하세요.")
+        
+        # Humanizer 설정
         self.humanizer.blending_ratio = 0.7
+        self.exploration_rate = 0.05
         
         # Brain (발판 정보)
         from modules.brain import StrategyBrain 
@@ -47,17 +61,29 @@ class MapleHunterUI:
         self.key_to_skill_map = {} 
         self.map_offset_x = 0
         self.map_offset_y = 0
+        self.map_min_x = 0
+        self.map_max_x = 1366
 
+        # 경로 변수
+        self.cur_map_path = ""
+        self.cur_lstm_path = ""
+        self.cur_rf_path = ""
+
+        # 2. UI 구성 (여기서 라벨들이 생성됨)
         self.setup_ui()
+        
+        # 3. 설정 로드
         self.load_settings()
         
-        # 키 리스너 & 루프 시작
+        # 4. 백그라운드 작업
         self.listener = keyboard.Listener(on_press=self.on_key_press, on_release=self.on_key_release)
         self.listener.start()
+        
         threading.Thread(target=self.humanizer.fit_from_logs, daemon=True).start()
-
-        self.agent = BotAgent()
-
+        
+        # 메인 루프
+        threading.Thread(target=self.loop, daemon=True).start()
+        
     def on_key_press(self, key):
         if self.is_recording:
             try: self.held_keys.add(self.get_key_name(key))
@@ -155,11 +181,20 @@ class MapleHunterUI:
         ttk.Button(map_frame, text="📂 Load Map JSON", command=self.open_map_file).pack(fill="x", padx=5, pady=5)
 
         # 2. AI 모델 로드 (신규 기능)
-        model_frame = ttk.LabelFrame(tab_map, text="2. AI Model (.pth)")
+        
+        model_frame = ttk.LabelFrame(tab_map, text="2. AI Models")
         model_frame.pack(fill="x", pady=5, padx=5)
-        self.lbl_model_name = ttk.Label(model_frame, text="No Model Loaded", foreground="gray")
-        self.lbl_model_name.pack(pady=2)
-        ttk.Button(model_frame, text="🧠 Load LSTM Model", command=self.load_model_action).pack(fill="x", padx=5, pady=5)
+
+        # [LSTM 섹션]
+        self.lbl_model_name = ttk.Label(model_frame, text="LSTM: Not Loaded", foreground="gray")
+        self.lbl_model_name.pack(pady=1)
+        ttk.Button(model_frame, text="🧠 Load LSTM (.pth)", command=self.load_model_action).pack(fill="x", padx=5, pady=2)
+
+        # [RF 섹션 - 새로 추가됨]
+        ttk.Separator(model_frame, orient="horizontal").pack(fill="x", pady=5) # 구분선
+        self.lbl_rf_name = ttk.Label(model_frame, text="RF: Not Loaded", foreground="gray") # 라벨 초기화 (필수)
+        self.lbl_rf_name.pack(pady=1)
+        ttk.Button(model_frame, text="🌲 Load RF (.pkl)", command=self.load_rf_model_action).pack(fill="x", padx=5, pady=2)
 
         # 3. 오프셋 조절
         offset_frame = ttk.LabelFrame(tab_map, text="3. Position Offset")
@@ -174,6 +209,11 @@ class MapleHunterUI:
         ttk.Button(btn_pad, text="▼", width=3, command=lambda: self.adjust_offset(0, 1)).grid(row=1, column=1)
         ttk.Button(btn_pad, text="▶", width=3, command=lambda: self.adjust_offset(1, 0)).grid(row=1, column=2)
         ttk.Button(offset_frame, text="Reset", command=lambda: self.adjust_offset(0, 0, reset=True)).pack(pady=2)
+
+        ttk.Separator(model_frame, orient="horizontal").pack(fill="x", pady=5)
+        self.lbl_physics = ttk.Label(model_frame, text="Physics: Auto-Loaded", foreground="gray")
+        self.lbl_physics.pack(pady=1)
+        ttk.Button(model_frame, text="🔄 Reload Physics JSON", command=self.reload_physics_action).pack(fill="x", padx=5, pady=2)
 
         # --- [Bottom Controls] ---
         bottom_frame = ttk.Frame(right)
@@ -199,13 +239,11 @@ class MapleHunterUI:
     # === [기능 구현] ===
 
     def load_model_action(self):
-        """LSTM 모델 로드 요청 (누락된 함수 복구)"""
         path = filedialog.askopenfilename(title="Select LSTM .pth", filetypes=[("PyTorch Model", "*.pth")])
         if path:
-            # Agent에게 모델 로드 위임
             success, msg = self.agent.load_lstm(path)
-            
             if success:
+                self.cur_lstm_path = path # [★추가] 경로 기억
                 self.lbl_model_name.config(text=f"LSTM: {path.split('/')[-1]}", foreground="blue")
                 self.btn_bot.config(state="normal")
                 messagebox.showinfo("로드 성공", msg)
@@ -213,11 +251,11 @@ class MapleHunterUI:
                 messagebox.showerror("로드 실패", msg)
 
     def load_rf_model_action(self):
-        """RF 모델 로드 요청"""
         path = filedialog.askopenfilename(title="Select RF .pkl", filetypes=[("Pickle files", "*.pkl")])
         if path:
             success, msg = self.agent.load_rf(path)
             if success:
+                self.cur_rf_path = path # [★추가] 경로 기억
                 self.lbl_rf_name.config(text=f"RF: {path.split('/')[-1]}", foreground="green")
                 messagebox.showinfo("로드 성공", msg)
             else:
@@ -237,8 +275,9 @@ class MapleHunterUI:
             self.is_botting = True
             self.btn_bot.config(text="⏹ STOP BOT (중지)", state="normal")
             self.lbl_bot_status.config(text="[BOT: ON]", foreground="red")
-            self.agent.reset_history() # 기억 초기화
-            self.history.clear() # 기억 초기화
+            
+            # [수정] self.history.clear() 삭제 (BotAgent가 알아서 관리함)
+            self.agent.reset_history()
 
     def find_platform_id(self, px, py):
         """[신규] 현재 위치의 발판 ID 찾기"""
@@ -251,20 +290,58 @@ class MapleHunterUI:
                 if dist < min_dist: min_dist = dist; best_id = i
         return best_id
 
+    def reload_physics_action(self):
+        # [★핵심 수정] 파일명 변경
+        if self.rune_manager.load_physics("physics_hybrid_model.pth"):
+            self.lbl_physics.config(text="Physics: Loaded", foreground="green")
+            messagebox.showinfo("성공", "물리 엔진을 다시 불러왔습니다.")
+        else:
+            messagebox.showerror("실패", "physics_hybrid_model.pth 파일이 없습니다.\ntrain_physics.py를 실행하세요.")
     def loop(self):
-        """메인 루프 (아주 깔끔해짐)"""
+        """메인 루프 (벽 충돌 방지 + 시퀀스 큐 제어 적용)"""
+        current_holding_keys = set()
+        
+        # [설정] 벽으로 인식할 미니맵 여유 공간 (픽셀 단위)
+        # 미니맵 상 5px 이내면 벽이라고 판단
+        WALL_MARGIN = 5 
+        
         while True:
-            # 1. 인식
+            # 1. 화면 인식
             if self.vision.window_found:
                 frame, entropy, kill_count, px, py = self.vision.capture_and_analyze()
+                
+                # 미니맵 정보 가져오기 (맵의 너비 mw가 필요함)
+                minimap_img = None
+                map_width = 100 # 기본값
+                
+                if self.vision.minimap_roi and frame is not None:
+                    mx, my, mw, mh = self.vision.minimap_roi
+                    map_width = mw # 미니맵 너비 갱신
+                    if 0 <= my < my+mh <= frame.shape[0] and 0 <= mx < mx+mw <= frame.shape[1]:
+                        minimap_img = frame[my:my+mh, mx:mx+mw]
             else:
                 frame, px, py = None, 0, 0
                 time.sleep(0.5); continue
 
             # 2. 정보 계산
             pid = self.find_platform_id(px, py)
-            current_keys = "+".join(sorted(self.held_keys)) if self.held_keys else "None"
+            current_keys_str = "+".join(sorted(self.held_keys)) if self.held_keys else "None"
             active_skill = "Idle"
+            
+            npc_key = "space"
+            jump_key = "space"
+            for name, key in self.input_handler.key_map.items():
+                lower_name = name.lower()
+                if lower_name in ["npc", "interact", "rune"]: npc_key = key
+                if lower_name == "jump": jump_key = key
+
+            current_dist_left = px - self.map_min_x
+            current_dist_right = self.map_max_x - px
+            
+            # (만약 px가 0이면 인식이 안 된 것이므로 거리도 0 처리)
+            if px == 0:
+                current_dist_left = 0
+                current_dist_right = 0
 
             # 3. 녹화 모드
             if self.is_recording and self.logger:
@@ -272,39 +349,146 @@ class MapleHunterUI:
                     if k in self.key_to_skill_map:
                         active_skill = self.key_to_skill_map[k]
                         self.skill_manager.use(active_skill)
-                self.logger.log_step(entropy, self.skill_manager, active_skill, current_keys, px, py, pid, kill_count)
+                
+                # [수정] log_step 호출 시 거리 정보 전달
+                self.logger.log_step(
+                    entropy, 
+                    self.skill_manager, 
+                    active_skill, 
+                    current_keys_str, 
+                    px, py, pid, 
+                    kill_count,
+                    current_dist_left,   # [추가]
+                    current_dist_right   # [추가]
+                )
 
-            # 4. 봇 모드 (Agent에게 물어보고 실행만 함)
+            # 4. 봇 모드
             if self.is_botting:
                 try:
-                    ult = 1 if self.skill_manager.is_ready("ultimate") else 0
-                    sub = 1 if self.skill_manager.is_ready("sub_attack") else 0
+                    action_name = "None"
                     
-                    # [핵심] Agent야, 지금 상황(State) 줄게. 뭐 해야 해(Action)?
-                    action, debug_msg = self.agent.get_action(px, py, entropy, pid, ult, sub)
+                    # -------------------------------------------------
+                    # [우선순위 0] 룬 시스템
+                    # -------------------------------------------------
+                    rune_action = None
+                    now = time.time()
+                    if now - self.rune_manager.last_scan_time >= self.rune_manager.scan_interval:
+                        print(f"[{time.strftime('%H:%M:%S')}] 🔍 룬 탐색...", end=" ")
+                        scan_pos = self.rune_manager.scan_for_rune(minimap_img)
+                        print(f"✨ 위치: {scan_pos}" if scan_pos else "❌ 미발견")
                     
-                    active_skill = debug_msg # UI 표시
-
-                    # ... (봇 행동 실행 부분)
-                    if action != "None":
-                        keys = action.split('+')
-                        # 쿨타임 처리
-                        for s_name, s_key in self.input_handler.key_map.items():
-                            if s_key in keys: self.skill_manager.use(s_name)
+                    if self.rune_manager.rune_pos and px > 0 and py > 0:
+                        # [중요] 룬 발견 시 기존 계획 취소
+                        self.agent.action_queue.clear() 
                         
-                        # [핵심 수정] 학습된 데이터 기반으로 딜레이 결정
-                        press_time = self.humanizer.get_press_duration()
+                        r_act, r_msg = self.rune_manager.get_move_action(px, py)
+                        if r_act:
+                            if r_act == "interact":
+                                rune_action = npc_key
+                                active_skill = "✨ ACTIVATING RUNE"
+                            else:
+                                rune_action = r_act
+                                active_skill = f"Run: {r_msg}"
 
-                        for k in keys: self.input_handler.hold(k)   # 누르기
-                        time.sleep(press_time)                      # 누른 상태 유지 (사람 같은 시간)
-                        for k in keys: self.input_handler.release(k) # 떼기
+                    # -------------------------------------------------
+                    # [우선순위 1] 설치기 강제 사용
+                    # -------------------------------------------------
+                    forced_action = None
+                    priority_skills = ["Lucid", "Kishin", "Installation", "Erda_Shower"] 
+                    for p_skill in priority_skills:
+                        if self.skill_manager.is_ready(p_skill):
+                            for k, v in self.key_to_skill_map.items():
+                                if v == p_skill:
+                                    forced_action = k
+                                    break
+                        if forced_action: break
+                    
+                    # -------------------------------------------------
+                    # [행동 결정]
+                    if rune_action:
+                        action_name = rune_action
+                    elif forced_action:
+                        self.agent.action_queue.clear() # 설치기 쓸 때도 큐 비우기
+                        action_name = forced_action
+                        active_skill = f"Auto: {forced_action}"
+                    elif random.random() < self.exploration_rate:
+                        action_name = random.choice(['left', 'right', jump_key])
+                        active_skill = f"🎲 Explore"
+                    else:
+                        # AI 추론 (Queue에서 가져옴)
+                        ult = 1 if self.skill_manager.is_ready("ultimate") else 0
+                        sub = 1 if self.skill_manager.is_ready("sub_attack") else 0
+                        
+                        # [핵심 수정] 거리 정보(current_dist_left, current_dist_right)를 함께 전달!
+                        act, debug_msg = self.agent.get_action(
+                            px, py, entropy, pid, ult, sub, 
+                            current_dist_left, current_dist_right
+                        )
+                        
+                        action_name = act
+                        active_skill = debug_msg
+
+                    # -------------------------------------------------
+                    # [★핵심] 벽 충돌 방지 (Emergency Brake)
+                    # -------------------------------------------------
+                    # px는 미니맵 상의 좌표임 (0 ~ map_width)
+                    if px > 0:
+                        # 1. 왼쪽 벽 충돌 감지
+                        if px < WALL_MARGIN and 'left' in action_name:
+                            self.agent.action_queue.clear() # 1. 계획된 '왼쪽 이동' 모두 삭제
+                            action_name = 'right'           # 2. 반대 방향 강제 주입
+                            active_skill = "🚧 Wall Fix (L)"
+
+                        # 2. 오른쪽 벽 충돌 감지
+                        elif px > (map_width - WALL_MARGIN) and 'right' in action_name:
+                            self.agent.action_queue.clear() # 1. 계획된 '오른쪽 이동' 모두 삭제
+                            action_name = 'left'            # 2. 반대 방향 강제 주입
+                            active_skill = "🚧 Wall Fix (R)"
+
+                    # [키 보정]
+                    if action_name == 'up': action_name = f'up+{jump_key}'
+                    elif action_name == 'down': action_name = f'down+{jump_key}'
+                    elif action_name == 'space': action_name = jump_key
+                    
+                    # State-Based Key Input
+                    if action_name != "None":
+                        target_keys = set(action_name.split('+'))
+                        for s_name, s_key in self.input_handler.key_map.items():
+                            if s_key in target_keys: self.skill_manager.use(s_name)
+
+                        keys_to_release = current_holding_keys - target_keys
+                        for k in keys_to_release:
+                            self.input_handler.release(k)
+                            current_holding_keys.remove(k)
+                        
+                        keys_to_press = target_keys - current_holding_keys
+                        
+                        if npc_key in target_keys and rune_action == npc_key:
+                             for k in target_keys:
+                                 self.input_handler.release(k)
+                                 time.sleep(0.05)
+                                 self.input_handler.hold(k)
+                                 current_holding_keys.add(k)
+                        else:
+                            for k in keys_to_press:
+                                self.input_handler.hold(k)
+                                current_holding_keys.add(k)
+                                time.sleep(random.uniform(0.01, 0.02))     
+                    else:
+                        if current_holding_keys:
+                            self.input_handler.release_all()
+                            current_holding_keys.clear()
 
                 except Exception as e:
                     self.is_botting = False
                     print(f"Bot Loop Error: {e}")
+                    self.input_handler.release_all()
                     self.root.after(0, lambda: self.btn_bot.config(text="ERROR"))
+            else:
+                if current_holding_keys:
+                    self.input_handler.release_all()
+                    current_holding_keys.clear()
 
-            # 5. UI 갱신
             self.root.after(0, self.update_gui, frame, entropy, active_skill, kill_count, px, py)
             time.sleep(0.033)
 
@@ -313,8 +497,26 @@ class MapleHunterUI:
         file_path = filedialog.askopenfilename(filetypes=[("JSON", "*.json")])
         if file_path:
             if self.brain.load_map_file(file_path):
+                self.cur_map_path = file_path
                 self.lbl_map_name.config(text=file_path.split("/")[-1], foreground="green")
-                messagebox.showinfo("성공", "맵 파일 로드 완료")
+                
+                # 룬 매니저 연동
+                self.rune_manager.load_map(file_path)
+
+                # [★핵심] 맵 경계(Wall) 자동 계산
+                # self.brain.footholds는 [(x1,y1,x2,y2), ...] 형태임
+                if self.brain.footholds:
+                   all_xs = []
+                   for (x1, y1, x2, y2) in self.brain.footholds:
+                       all_xs.append(x1)
+                       all_xs.append(x2)
+
+                   self.map_min_x = min(all_xs)
+                   self.map_max_x = max(all_xs) # ★ 이 부분이 실행되어야 1366이 184로 바뀝니다.
+                    
+                   print(f"🗺️ 맵 경계 감지: 왼쪽 벽({self.map_min_x}), 오른쪽 벽({self.map_max_x})")
+                
+                messagebox.showinfo("성공", f"맵 로드 완료\n벽 범위: {self.map_min_x} ~ {self.map_max_x}")
 
     def adjust_offset(self, dx, dy, reset=False):
         if reset: self.map_offset_x = 0; self.map_offset_y = 0
@@ -341,34 +543,18 @@ class MapleHunterUI:
         # 중요: 리스트에서도 해당 정보를 제거해야 저장 시 에러가 안 남
         self.skill_rows = [r for r in self.skill_rows if r["frame"] != row_frame]
 
-    def load_settings(self):
-        data = utils.load_config()
-        self.entry_job.insert(0, data.get("job_name", "Adventurer"))
-        self.map_offset_x = data.get("map_offset_x", 0)
-        self.map_offset_y = data.get("map_offset_y", 0)
-        self.lbl_offset.config(text=f"Offset: ({self.map_offset_x}, {self.map_offset_y})")
-        
-        # 미니맵 ROI 복구
-        minimap_roi = data.get("minimap_roi")
-        if minimap_roi and isinstance(minimap_roi, (list, tuple)): # 값이 있고 리스트/튜플인지 확인
-            self.vision.set_minimap_roi(tuple(minimap_roi))
-            
-        mapping = data.get("mapping", {})
-        for r in self.skill_rows: r["frame"].destroy()
-        self.skill_rows = []
-        if not mapping: self.add_skill_row("Genesis", "r", "30.0")
-        else:
-            for s, i in mapping.items():
-                self.add_skill_row(s, i.get("key", ""), str(i.get("cd", 0)))
-        self.update_logic_from_ui()
-
     def save_settings(self):
+        """설정 저장 (ROI, 키매핑, 파일 경로, 지속시간 포함)"""
         mapping = {}
         for r in self.skill_rows:
-            # 삭제된 위젯에 접근하지 않도록 안전장치
             try:
+                # 빈 칸이거나 삭제된 행은 제외
                 if r["frame"].winfo_exists() and r["name"].get():
-                    mapping[r["name"].get()] = {"key": r["key"].get(), "cd": float(r["cd"].get() or 0)}
+                    mapping[r["name"].get()] = {
+                        "key": r["key"].get(), 
+                        "cd": float(r["cd"].get() or 0),
+                        "dur": float(r["dur"].get() or 0)
+                    }
             except: pass
             
         data = {
@@ -376,11 +562,75 @@ class MapleHunterUI:
             "mapping": mapping,
             "map_offset_x": self.map_offset_x,
             "map_offset_y": self.map_offset_y,
-            "minimap_roi": self.vision.minimap_roi
+            "minimap_roi": self.vision.minimap_roi,
+            
+            # [수정] self.vision.roi -> self.vision.kill_roi 로 변경
+            "kill_roi": self.vision.kill_roi, 
+            
+            "last_map_path": self.cur_map_path,
+            "last_lstm_path": self.cur_lstm_path,
+            "last_rf_path": self.cur_rf_path
         }
         utils.save_config(data)
         self.update_logic_from_ui()
         messagebox.showinfo("저장됨", "설정이 저장되었습니다.")
+
+    def load_settings(self):
+        """설정 불러오기 (자동 파일 로드 + 지속시간 복구)"""
+        import os
+        data = utils.load_config()
+        
+        self.entry_job.insert(0, data.get("job_name", "Adventurer"))
+        self.map_offset_x = data.get("map_offset_x", 0)
+        self.map_offset_y = data.get("map_offset_y", 0)
+        self.lbl_offset.config(text=f"Offset: ({self.map_offset_x}, {self.map_offset_y})")
+        
+        # ROI 복구
+        minimap_roi = data.get("minimap_roi")
+        if minimap_roi: self.vision.set_minimap_roi(tuple(minimap_roi))
+        kill_roi = data.get("kill_roi")
+        if kill_roi: self.vision.set_roi(tuple(kill_roi))
+
+        # 파일 경로 복구 (기존 로직 유지)
+        map_path = data.get("last_map_path", "")
+        if map_path and os.path.exists(map_path):
+            if self.brain.load_map_file(map_path):
+                self.cur_map_path = map_path
+                self.lbl_map_name.config(text=map_path.split("/")[-1], foreground="green")
+
+        lstm_path = data.get("last_lstm_path", "")
+        if lstm_path and os.path.exists(lstm_path):
+            success, _ = self.agent.load_lstm(lstm_path)
+            if success:
+                self.cur_lstm_path = lstm_path
+                self.lbl_model_name.config(text=f"LSTM: {lstm_path.split('/')[-1]}", foreground="blue")
+                self.btn_bot.config(state="normal")
+
+        rf_path = data.get("last_rf_path", "")
+        if rf_path and os.path.exists(rf_path):
+            success, _ = self.agent.load_rf(rf_path)
+            if success:
+                self.cur_rf_path = rf_path
+                self.lbl_rf_name.config(text=f"RF: {rf_path.split('/')[-1]}", foreground="green")
+
+        # 스킬 매핑 복구 (NPC 키 및 지속시간 포함)
+        mapping = data.get("mapping", {})
+        
+        # 기존 목록 초기화
+        for r in self.skill_rows: r["frame"].destroy()
+        self.skill_rows = []
+        
+        if not mapping: 
+            self.add_skill_row("Genesis", "r", "30.0", "0.0")
+        else:
+            for s, i in mapping.items():
+                self.add_skill_row(
+                    s, 
+                    i.get("key", ""), 
+                    str(i.get("cd", 0)), 
+                    str(i.get("dur", 0)) # [수정] 지속시간(dur) 불러오기 추가
+                )
+        self.update_logic_from_ui()
 
     def update_logic_from_ui(self):
         self.key_to_skill_map.clear()
