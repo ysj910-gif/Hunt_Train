@@ -308,8 +308,7 @@ class MapleHunterUI:
         while True:
             # 1. 화면 인식
             if self.vision.window_found:
-                frame, entropy, kill_count, px, py = self.vision.capture_and_analyze()
-                
+                frame, entropy, kill_count, px, py = self.vision.capture_and_analyze()                
                 # 미니맵 정보 가져오기 (맵의 너비 mw가 필요함)
                 minimap_img = None
                 map_width = 100 # 기본값
@@ -420,9 +419,11 @@ class MapleHunterUI:
                         sub = 1 if self.skill_manager.is_ready("sub_attack") else 0
                         
                         # [핵심 수정] 거리 정보(current_dist_left, current_dist_right)를 함께 전달!
+                        # [★수정됨] current_kill_count 인자 추가!
                         act, debug_msg = self.agent.get_action(
                             px, py, entropy, pid, ult, sub, 
-                            current_dist_left, current_dist_right
+                            current_dist_left, current_dist_right,
+                            current_kill_count=kill_count  # <-- 여기!
                         )
                         
                         action_name = act
@@ -503,21 +504,21 @@ class MapleHunterUI:
                 # 룬 매니저 연동
                 self.rune_manager.load_map(file_path)
 
-                # [★핵심] 맵 경계(Wall) 자동 계산
-                # self.brain.footholds는 [(x1,y1,x2,y2), ...] 형태임
+                # [★추가됨] Agent(네비게이터)에게도 맵 변경 알림 -> 그래프 재생성
+                self.agent.on_map_change(file_path)
+                print(f"🗺️ [GUI] Agent에게 맵 정보 전달 완료")
+
+                # 맵 경계 자동 계산 (기존 코드 유지)
                 if self.brain.footholds:
                    all_xs = []
                    for (x1, y1, x2, y2) in self.brain.footholds:
                        all_xs.append(x1)
                        all_xs.append(x2)
-
                    self.map_min_x = min(all_xs)
-                   self.map_max_x = max(all_xs) # ★ 이 부분이 실행되어야 1366이 184로 바뀝니다.
-                    
-                   print(f"🗺️ 맵 경계 감지: 왼쪽 벽({self.map_min_x}), 오른쪽 벽({self.map_max_x})")
+                   self.map_max_x = max(all_xs)
                 
                 messagebox.showinfo("성공", f"맵 로드 완료\n벽 범위: {self.map_min_x} ~ {self.map_max_x}")
-
+    
     def adjust_offset(self, dx, dy, reset=False):
         if reset: self.map_offset_x = 0; self.map_offset_y = 0
         else: self.map_offset_x += dx; self.map_offset_y += dy
@@ -612,6 +613,16 @@ class MapleHunterUI:
             if success:
                 self.cur_rf_path = rf_path
                 self.lbl_rf_name.config(text=f"RF: {rf_path.split('/')[-1]}", foreground="green")
+
+        map_path = data.get("last_map_path", "")
+        if map_path and os.path.exists(map_path):
+            if self.brain.load_map_file(map_path):
+                self.cur_map_path = map_path
+                self.lbl_map_name.config(text=map_path.split("/")[-1], foreground="green")
+                
+                # [★추가됨] 자동 로드 시에도 Agent에게 알림
+                self.rune_manager.load_map(map_path)
+                self.agent.on_map_change(map_path)
 
         # 스킬 매핑 복구 (NPC 키 및 지속시간 포함)
         mapping = data.get("mapping", {})
