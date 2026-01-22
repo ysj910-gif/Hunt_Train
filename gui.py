@@ -85,12 +85,14 @@ class MapleHunterUI:
         threading.Thread(target=self.loop, daemon=True).start()
         
     def on_key_press(self, key):
-        if self.is_recording:
+        # [수정] 봇이 켜져있을 땐 물리 키보드 입력을 무시함 (중복 기록 방지)
+        if self.is_recording and not self.is_botting: 
             try: self.held_keys.add(self.get_key_name(key))
             except: pass
 
     def on_key_release(self, key):
-        if self.is_recording:
+        # [수정] 봇이 켜져있을 땐 물리 키보드 입력을 무시함
+        if self.is_recording and not self.is_botting:
             try:
                 k = self.get_key_name(key)
                 if k in self.held_keys: self.held_keys.remove(k)
@@ -280,14 +282,37 @@ class MapleHunterUI:
             self.agent.reset_history()
 
     def find_platform_id(self, px, py):
-        """[신규] 현재 위치의 발판 ID 찾기"""
+        """
+        [수정] 더 너그러운 판정 로직 적용
+        - 시각적으로는 맞아도 좌표가 1~2픽셀 어긋날 수 있음을 보정
+        """
         if not self.brain.footholds: return -1
-        best_id = -1; min_dist = 50
+        
+        best_id = -1
+        min_dist = 999  # 가장 가까운 발판을 찾기 위한 초기값
+        
+        # [핵심] 판정 여유 범위 (Tolerance)
+        # X축: 발판 끝에서 5픽셀 정도는 벗어나도 인정
+        # Y축: 발판 위아래 12픽셀 까지는 인정 (점프 중이거나 좌표 오차 고려)
+        X_TOLERANCE = 3  
+        Y_TOLERANCE = 5 
+
         for i, (x1, y1, x2, y2) in enumerate(self.brain.footholds):
-            fx1 = x1 + self.map_offset_x; fy = y1 + self.map_offset_y; fx2 = x2 + self.map_offset_x
-            if fx1 <= px <= fx2:
+            # 오프셋 적용 (화면에 그려지는 빨간 선과 동일한 좌표 계산)
+            fx1 = x1 + self.map_offset_x
+            fy = y1 + self.map_offset_y
+            fx2 = x2 + self.map_offset_x
+            
+            # 1. X축 범위 확인 (여유 범위 포함)
+            if (fx1 - X_TOLERANCE) <= px <= (fx2 + X_TOLERANCE):
                 dist = abs(py - fy)
-                if dist < min_dist: min_dist = dist; best_id = i
+                
+                # 2. Y축 높이 확인 (가장 가까운 발판 찾기)
+                if dist < Y_TOLERANCE:
+                    if dist < min_dist:
+                        min_dist = dist
+                        best_id = i
+        
         return best_id
 
     def reload_physics_action(self):
@@ -297,201 +322,159 @@ class MapleHunterUI:
             messagebox.showinfo("성공", "물리 엔진을 다시 불러왔습니다.")
         else:
             messagebox.showerror("실패", "physics_hybrid_model.pth 파일이 없습니다.\ntrain_physics.py를 실행하세요.")
+    
     def loop(self):
-        """메인 루프 (벽 충돌 방지 + 시퀀스 큐 제어 적용)"""
-        current_holding_keys = set()
-        
-        # [설정] 벽으로 인식할 미니맵 여유 공간 (픽셀 단위)
-        # 미니맵 상 5px 이내면 벽이라고 판단
-        WALL_MARGIN = 5 
+        """메인 루프: 진단 정보(HUD) 수집 및 봇 로그 기록 기능 추가"""
+        WALL_MARGIN = 7  # 벽 감지 범위 확대
         
         while True:
             # 1. 화면 인식
             if self.vision.window_found:
-                frame, entropy, kill_count, px, py = self.vision.capture_and_analyze()                
-                # 미니맵 정보 가져오기 (맵의 너비 mw가 필요함)
+                frame, entropy, kill_count, px, py = self.vision.capture_and_analyze()
                 minimap_img = None
-                map_width = 100 # 기본값
-                
                 if self.vision.minimap_roi and frame is not None:
                     mx, my, mw, mh = self.vision.minimap_roi
-                    map_width = mw # 미니맵 너비 갱신
                     if 0 <= my < my+mh <= frame.shape[0] and 0 <= mx < mx+mw <= frame.shape[1]:
                         minimap_img = frame[my:my+mh, mx:mx+mw]
             else:
                 frame, px, py = None, 0, 0
                 time.sleep(0.5); continue
 
-            # 2. 정보 계산
+            # 2. 기본 정보 계산
             pid = self.find_platform_id(px, py)
-            current_keys_str = "+".join(sorted(self.held_keys)) if self.held_keys else "None"
+            current_dist_left = px - self.map_min_x if px > 0 else 0
+            current_dist_right = self.map_max_x - px if px > 0 else 0
+            
+            # 진단용 변수 초기화
+            action_name = "None"
             active_skill = "Idle"
-            
-            npc_key = "space"
-            jump_key = "space"
-            for name, key in self.input_handler.key_map.items():
-                lower_name = name.lower()
-                if lower_name in ["npc", "interact", "rune"]: npc_key = key
-                if lower_name == "jump": jump_key = key
+            debug_info = {} # 화면에 그릴 정보들
 
-            current_dist_left = px - self.map_min_x
-            current_dist_right = self.map_max_x - px
-            
-            # (만약 px가 0이면 인식이 안 된 것이므로 거리도 0 처리)
-            if px == 0:
-                current_dist_left = 0
-                current_dist_right = 0
-
-            # 3. 녹화 모드
-            if self.is_recording and self.logger:
-                for k in self.held_keys:
-                    if k in self.key_to_skill_map:
-                        active_skill = self.key_to_skill_map[k]
-                        self.skill_manager.use(active_skill)
-                
-                # [수정] log_step 호출 시 거리 정보 전달
-                self.logger.log_step(
-                    entropy, 
-                    self.skill_manager, 
-                    active_skill, 
-                    current_keys_str, 
-                    px, py, pid, 
-                    kill_count,
-                    current_dist_left,   # [추가]
-                    current_dist_right   # [추가]
-                )
-
-            # 4. 봇 모드
+            # 3. 봇 로직 수행
             if self.is_botting:
                 try:
-                    action_name = "None"
-                    
-                    # -------------------------------------------------
-                    # [우선순위 0] 룬 시스템
-                    # -------------------------------------------------
-                    rune_action = None
-                    now = time.time()
-                    if now - self.rune_manager.last_scan_time >= self.rune_manager.scan_interval:
-                        print(f"[{time.strftime('%H:%M:%S')}] 🔍 룬 탐색...", end=" ")
-                        scan_pos = self.rune_manager.scan_for_rune(minimap_img)
-                        print(f"✨ 위치: {scan_pos}" if scan_pos else "❌ 미발견")
-                    
-                    if self.rune_manager.rune_pos and px > 0 and py > 0:
-                        # [중요] 룬 발견 시 기존 계획 취소
-                        self.agent.action_queue.clear() 
-                        
+                    # 3-1. 룬 탐색
+                    self.rune_manager.scan_for_rune(minimap_img)
+                    if self.rune_manager.rune_pos and px > 0:
+                        self.agent.action_queue.clear()
                         r_act, r_msg = self.rune_manager.get_move_action(px, py)
                         if r_act:
-                            if r_act == "interact":
-                                rune_action = npc_key
-                                active_skill = "✨ ACTIVATING RUNE"
-                            else:
-                                rune_action = r_act
-                                active_skill = f"Run: {r_msg}"
+                            if r_act == "interact": action_name = "space"; active_skill = "Rune Act"
+                            else: action_name = r_act; active_skill = f"Rune: {r_msg}"
 
-                    # -------------------------------------------------
-                    # [우선순위 1] 설치기 강제 사용
-                    # -------------------------------------------------
-                    forced_action = None
-                    priority_skills = ["Lucid", "Kishin", "Installation", "Erda_Shower"] 
-                    for p_skill in priority_skills:
-                        if self.skill_manager.is_ready(p_skill):
-                            for k, v in self.key_to_skill_map.items():
-                                if v == p_skill:
-                                    forced_action = k
-                                    break
-                        if forced_action: break
-                    
-                    # -------------------------------------------------
-                    # [행동 결정]
-                    if rune_action:
-                        action_name = rune_action
-                    elif forced_action:
-                        self.agent.action_queue.clear() # 설치기 쓸 때도 큐 비우기
-                        action_name = forced_action
-                        active_skill = f"Auto: {forced_action}"
-                    elif random.random() < self.exploration_rate:
-                        action_name = random.choice(['left', 'right', jump_key])
-                        active_skill = f"🎲 Explore"
-                    else:
-                        # AI 추론 (Queue에서 가져옴)
+                    # 3-2. 젠 사이클 및 행동 결정 (룬이 없을 때만)
+                    if action_name == "None":
                         ult = 1 if self.skill_manager.is_ready("ultimate") else 0
                         sub = 1 if self.skill_manager.is_ready("sub_attack") else 0
                         
-                        # [핵심 수정] 거리 정보(current_dist_left, current_dist_right)를 함께 전달!
-                        # [★수정됨] current_kill_count 인자 추가!
-                        act, debug_msg = self.agent.get_action(
+                        # [핵심] Agent에게 킬 카운트를 넘겨줘서 젠 타이밍 계산 유도
+                        act, msg = self.agent.get_action(
                             px, py, entropy, pid, ult, sub, 
-                            current_dist_left, current_dist_right,
-                            current_kill_count=kill_count  # <-- 여기!
+                            current_dist_left, current_dist_right, 
+                            current_kill_count=kill_count
                         )
-                        
                         action_name = act
-                        active_skill = debug_msg
+                        active_skill = msg
 
-                    # -------------------------------------------------
-                    # [★핵심] 벽 충돌 방지 (Emergency Brake)
-                    # -------------------------------------------------
-                    # px는 미니맵 상의 좌표임 (0 ~ map_width)
+                    # 3-3. 벽 충돌 방지 (Emergency Override)
                     if px > 0:
-                        # 1. 왼쪽 벽 충돌 감지
-                        if px < WALL_MARGIN and 'left' in action_name:
-                            self.agent.action_queue.clear() # 1. 계획된 '왼쪽 이동' 모두 삭제
-                            action_name = 'right'           # 2. 반대 방향 강제 주입
-                            active_skill = "🚧 Wall Fix (L)"
+                        if px < self.map_min_x + WALL_MARGIN and 'left' in action_name:
+                            self.agent.action_queue.clear()
+                            action_name = 'right'; active_skill = "Wall(L) Fix"
+                        elif px > self.map_max_x - WALL_MARGIN and 'right' in action_name:
+                            self.agent.action_queue.clear()
+                            action_name = 'left'; active_skill = "Wall(R) Fix"
 
-                        # 2. 오른쪽 벽 충돌 감지
-                        elif px > (map_width - WALL_MARGIN) and 'right' in action_name:
-                            self.agent.action_queue.clear() # 1. 계획된 '오른쪽 이동' 모두 삭제
-                            action_name = 'left'            # 2. 반대 방향 강제 주입
-                            active_skill = "🚧 Wall Fix (R)"
+                    # 3-4. [진단 정보 수집] 화면에 표시할 내용 정리
+                    debug_info = {
+                        "Cycle": self.agent.gen_manager.check_cycle(),
+                        "Pattern": "Ready" if self.agent.gen_manager.pattern_queue else "Empty",
+                        "Stuck": f"{self.agent.stuck_count}/2",
+                        "Nav": active_skill
+                    }
 
-                    # [키 보정]
-                    if action_name == 'up': action_name = f'up+{jump_key}'
-                    elif action_name == 'down': action_name = f'down+{jump_key}'
-                    elif action_name == 'space': action_name = jump_key
-                    
-                    # State-Based Key Input
-                    if action_name != "None":
-                        target_keys = set(action_name.split('+'))
-                        for s_name, s_key in self.input_handler.key_map.items():
-                            if s_key in target_keys: self.skill_manager.use(s_name)
-
-                        keys_to_release = current_holding_keys - target_keys
-                        for k in keys_to_release:
-                            self.input_handler.release(k)
-                            current_holding_keys.remove(k)
-                        
-                        keys_to_press = target_keys - current_holding_keys
-                        
-                        if npc_key in target_keys and rune_action == npc_key:
-                             for k in target_keys:
-                                 self.input_handler.release(k)
-                                 time.sleep(0.05)
-                                 self.input_handler.hold(k)
-                                 current_holding_keys.add(k)
-                        else:
-                            for k in keys_to_press:
-                                self.input_handler.hold(k)
-                                current_holding_keys.add(k)
-                                time.sleep(random.uniform(0.01, 0.02))     
-                    else:
-                        if current_holding_keys:
-                            self.input_handler.release_all()
-                            current_holding_keys.clear()
+                    # 3-5. 키 입력 실행 (함수 분리됨)
+                    self.execute_bot_action(action_name)
 
                 except Exception as e:
+                    print(f"Bot Error: {e}")
                     self.is_botting = False
-                    print(f"Bot Loop Error: {e}")
-                    self.input_handler.release_all()
-                    self.root.after(0, lambda: self.btn_bot.config(text="ERROR"))
-            else:
-                if current_holding_keys:
-                    self.input_handler.release_all()
-                    current_holding_keys.clear()
 
-            self.root.after(0, self.update_gui, frame, entropy, active_skill, kill_count, px, py)
+            # 4. 키 상태 업데이트 (로그용)
+            # 봇이 켜져있으면 봇의 행동(action_name)을 현재 입력 키로 간주
+            if self.is_botting:
+                current_keys_str = action_name
+            else:
+                # 봇이 꺼져있으면 사람이 누른 키 기록
+                current_keys_str = "+".join(sorted(self.held_keys)) if self.held_keys else "None"
+
+            # 5. 데이터 녹화 (CSV Log)
+            # [수정] 봇이 작동 중일 때도 로그를 남겨서 나중에 분석 가능하게 함
+            if self.is_recording and self.logger:
+                self.logger.log_step(
+                    entropy, self.skill_manager, active_skill, current_keys_str, 
+                    px, py, pid, kill_count, current_dist_left, current_dist_right
+                )
+
+            # 6. GUI 업데이트 (진단 정보 전달)
+            self.root.after(0, self.update_gui, frame, entropy, action_name, kill_count, px, py, debug_info)
             time.sleep(0.033)
+
+    def execute_bot_action(self, action_name):
+        """
+        [최종 수정] 
+        - 'jump': 사다리/윗점프용 (꾹 누르기)
+        - 'double_jump': 플래시 점프용 (따닥 연타)
+        """
+        npc_key = "space"; jump_key = "space" 
+        for n, k in self.input_handler.key_map.items():
+            if n.lower() == "jump": jump_key = k
+
+        # 방향키 보정
+        if action_name == 'up': action_name = f'up+{jump_key}'
+        elif action_name == 'down': action_name = f'down+{jump_key}'
+        
+        if action_name != "None":
+            # 'right+double_jump+q' 같은 문자열 처리
+            target_keys = set(action_name.replace('double_jump', jump_key).split('+'))
+            
+            # 스킬 사용
+            for s_name, s_key in self.input_handler.key_map.items():
+                if s_key in target_keys: self.skill_manager.use(s_name)
+            
+            move_keys = ['left', 'right', 'up', 'down']
+            
+            # 1. 안 쓰는 이동키 떼기
+            for k in list(self.input_handler.held_keys):
+                if k not in target_keys and k in move_keys: 
+                    self.input_handler.release(k)
+            
+            # 2. 이동키 Hold
+            for k in target_keys:
+                if k in move_keys:
+                    if k not in self.input_handler.held_keys:
+                        self.input_handler.hold(k)
+            
+            # 3. 점프 로직 분기 (핵심!)
+            if 'double_jump' in action_name:
+                # [플래시 점프] 따닥!
+                self.input_handler.press(jump_key)
+                time.sleep(0.12) # 점프 사이 딜레이
+                self.input_handler.press(jump_key)
+                target_keys.discard(jump_key) # 아래에서 중복 입력 방지
+                
+            elif 'jump' in action_name:
+                # [일반 점프/윗점프] 꾹~ (InputHandler.press의 0.1초 쿨타임 이용)
+                # 사다리에서는 연타보다 꾹 누르는 게 유리할 수 있음
+                # 여기서는 press(Tap)를 쓰되, 딜레이 없이 한 번만 입력
+                self.input_handler.press(jump_key)
+
+            # 4. 나머지 키 (공격 등)
+            for k in target_keys:
+                if k not in move_keys and k != jump_key:
+                    self.input_handler.press(k)
+        else:
+            self.input_handler.release_all()
 
     # 기존 함수들 (가독성 복구 및 버그 수정)
     def open_map_file(self):
@@ -670,37 +653,76 @@ class MapleHunterUI:
                 self.progress_bars[s] = pb
 
     def toggle_recording(self):
+        """[수정] 봇 가동 중이면 파일명에 'Bot_' 접두사 추가"""
         if self.is_recording:
             self.is_recording = False
             self.btn_record.config(text="⏺ REC (데이터 녹화)")
-            if self.logger: self.logger.close(); messagebox.showinfo("완료", f"저장: {self.logger.filepath}")
+            if self.logger: 
+                self.logger.close()
+                messagebox.showinfo("완료", f"저장 완료:\n{self.logger.filepath}")
             self.logger = None
         else:
-            if not self.vision.window_found: messagebox.showwarning("경고", "창을 먼저 찾으세요."); return
-            self.logger = DataLogger(self.entry_job.get())
+            if not self.vision.window_found: 
+                messagebox.showwarning("경고", "먼저 메이플 창을 찾으세요.")
+                return
+            
+            # [핵심] 봇 상태에 따라 파일명 결정
+            prefix = "Bot" if self.is_botting else "Human"
+            job = self.entry_job.get()
+            filename = f"{prefix}_{job}"
+            
+            self.logger = DataLogger(filename)
             self.is_recording = True
             self.btn_record.config(text="⏹ STOP (저장 중...)", state="normal")
 
-    def update_gui(self, frame, entropy, action, kill, px, py):
+    def update_gui(self, frame, entropy, action, kill, px, py, debug_info):
+        """화면에 진단용 HUD(자막) 그리기"""
         if frame is not None:
-            # 발판 그리기
+            # 1. 발판 및 캐릭터 그리기 (기존 동일)
             if self.brain.footholds:
                 for (x1,y1,x2,y2) in self.brain.footholds:
                     cv2.line(frame, (x1+self.map_offset_x, y1+self.map_offset_y), 
                              (x2+self.map_offset_x, y2+self.map_offset_y), (0,0,255), 2)
-            # 캐릭터 위치
-            if self.vision.minimap_roi and px>0:
+            
+            if self.vision.minimap_roi and px > 0:
                 mx, my, _, _ = self.vision.minimap_roi
                 cv2.circle(frame, (mx+px, my+py), 5, (0,255,0), -1)
-                
+
+            # 2. [신규] 진단 정보(HUD) 오버레이
+            # 화면에 텍스트를 그려서 현재 봇의 상태를 표시합니다.
+            y_pos = 30
+            
+            # A. 현재 수행 중인 행동
+            cv2.putText(frame, f"ACT: {action}", (10, y_pos), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
+            y_pos += 25
+            
+            # B. 젠 사이클 상태 (전투중 / 대기중 / 젠직전)
+            cycle = debug_info.get("Cycle", "OFF")
+            color = (0, 0, 255) if cycle == "COMBAT" else (255, 0, 0) # 전투=빨강, 대기=파랑
+            cv2.putText(frame, f"MODE: {cycle}", (10, y_pos), cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
+            y_pos += 25
+            
+            # C. 네비게이터 메시지 (왜 움직이는지 이유)
+            nav = debug_info.get("Nav", "")
+            cv2.putText(frame, f"MSG: {nav}", (10, y_pos), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 200, 200), 2)
+            y_pos += 25
+            
+            # D. 고착 상태 (갇힘 카운트)
+            stuck = debug_info.get("Stuck", "0")
+            if stuck != "0/2": # 갇히기 시작하면 표시
+                cv2.putText(frame, f"STUCK: {stuck}", (10, y_pos), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
+
+            # 이미지 변환 및 캔버스 출력
             img = ImageTk.PhotoImage(image=Image.fromarray(cv2.cvtColor(cv2.resize(frame, (640,360)), cv2.COLOR_BGR2RGB)))
             self.canvas.create_image(0, 0, image=img, anchor="nw")
             self.canvas.image = img
             
+        # 하단 라벨 업데이트
         self.lbl_entropy.config(text=f"Ent: {entropy:.0f} | Pos: ({px},{py})")
         self.lbl_action.config(text=f"Act: {action}")
         self.lbl_kill.config(text=f"Kills: {kill}")
         
+        # 쿨타임 바 업데이트
         for s, pb in getattr(self, 'progress_bars', {}).items():
             rem = self.skill_manager.get_remaining(s)
             tot = self.skill_manager.cooldowns.get(s, 1)

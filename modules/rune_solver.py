@@ -58,7 +58,6 @@ class PhysicsLearner:
 
     def load_model(self, filepath):
         if not os.path.exists(filepath):
-            # print(f"❌ [PhysicsLearner] 파일 없음: {filepath}")
             return False
         try:
             checkpoint = torch.load(filepath, map_location=self.device)
@@ -164,7 +163,7 @@ class PathFinder:
             node = node.parent
         return list(reversed(path))
 
-# [4] 룬 매니저 (간격 수정됨)
+# [4] 룬 매니저 (핵심 수정됨)
 class RuneManager:
     def __init__(self):
         self.learner = PhysicsLearner()
@@ -176,7 +175,7 @@ class RuneManager:
         self.rune_pos = None 
         self.last_scan_time = 0
         
-        # [★수정] 룬 탐색 간격: 60초 (1분)
+        # [설정] 기본 탐색 간격 (60초)
         self.scan_interval = 60.0 
         
         self.path_queue = deque()
@@ -190,16 +189,26 @@ class RuneManager:
         if self.platform_mgr: self.platform_mgr.load_platforms(map_file)
 
     def scan_for_rune(self, minimap_img):
+        """
+        룬 탐색 로직 (스마트 주기 적용)
+        - 룬이 없을 때: 60초마다 탐색
+        - 룬을 추적 중일 때: 3초마다 재확인 (사라짐 감지)
+        """
         now = time.time()
-        # 이미 룬 위치를 알고 있으면 탐색 스킵 (이동에 집중)
-        if self.rune_pos is not None: return self.rune_pos
         
-        # 쿨타임 체크 (60초)
-        if now - self.last_scan_time < self.scan_interval: return None
+        # [핵심] 현재 상태에 따라 검사 주기 변경
+        current_interval = self.scan_interval # 기본 60초
+        if self.rune_pos is not None:
+            current_interval = 3.0 # 추적 중엔 3초마다 검사
+            
+        # 쿨타임 체크
+        if now - self.last_scan_time < current_interval: 
+            return self.rune_pos
         
         self.last_scan_time = now
         if minimap_img is None: return None
 
+        # 이미지 처리
         hsv = cv2.cvtColor(minimap_img, cv2.COLOR_BGR2HSV)
         mask = cv2.inRange(hsv, self.lower_purple, self.upper_purple)
         kernel = np.ones((3,3), np.uint8)
@@ -216,11 +225,25 @@ class RuneManager:
                     cy = M["m01"] / M["m00"]
                     best_pos = (cx, cy)
                     break
+        
+        # [상태 업데이트 및 로깅]
+        prev_pos = self.rune_pos
         self.rune_pos = best_pos
+        
+        if best_pos:
+            # 새로 발견했을 때만 로그 출력
+            if prev_pos is None:
+                print(f"[{time.strftime('%H:%M:%S')}] ✨ 룬 발견! 위치: {best_pos}")
+        else:
+            # 룬이 있었는데 사라졌을 때 로그 출력
+            if prev_pos is not None:
+                print(f"[{time.strftime('%H:%M:%S')}] 🗑️ 룬이 사라졌습니다. (추적 중지)")
+                self.path_queue.clear() # 이동 경로 취소
+                
         return best_pos
 
     def get_move_action(self, player_x, player_y):
-        """이동 로직 (디버그 + Fallback 포함)"""
+        """이동 로직"""
         if not self.rune_pos: return None, "No Rune"
 
         rx, ry = self.rune_pos
@@ -228,9 +251,6 @@ class RuneManager:
         dy = ry - player_y
         dist = math.hypot(dx, dy)
         
-        if dist > 300: 
-            print(f"[RuneDebug] 나:({int(player_x)},{int(player_y)}) 룬:({int(rx)},{int(ry)}) 거리:{int(dist)}")
-
         # 1. 도착 판정
         if dist < 5.0:
             print("✨ 룬 도착! 상호작용 시도")
@@ -247,24 +267,21 @@ class RuneManager:
         # 3. A* 경로 탐색
         now = time.time()
         if (not self.path_queue) and (now - self.last_path_calc_time > self.recalc_interval):
-            print(f"🧩 A* 경로 계산 시도... (거리: {int(dist)})")
+            # print(f"🧩 A* 경로 계산 시도... (거리: {int(dist)})")
             path = self.path_finder.find_path(player_x, player_y, rx, ry)
             
             if path:
                 self.path_queue = deque(path)
                 self.last_path_calc_time = now
-                print(f"✅ 경로 발견: {len(path)} 단계")
             else:
-                print("⚠️ 경로 탐색 실패 -> Fallback 모드 전환")
+                # print("⚠️ 경로 탐색 실패 -> Fallback 모드")
                 self.path_queue.clear()
 
         # 4. 큐 실행
         if self.path_queue:
             return self.path_queue.popleft(), f"A*({len(self.path_queue)})"
 
-        # 5. [Fallback] 단순 이동 (물리 엔진 실패 시 작동)
-        # print("⚠️ [Fallback] 단순 이동 중...") # 너무 시끄러우면 주석 처리 가능
-        
+        # 5. [Fallback] 단순 이동
         if dy < -30: 
             if abs(dx) > 20: return ("right+jump" if dx > 0 else "left+jump"), "Fallback-Jump"
             return "up+jump", "Fallback-UpJump"

@@ -1,73 +1,77 @@
-# modules/input.py
-import serial
 import time
-import config
+import random
+from pynput.keyboard import Controller, Key, KeyCode
 
 class InputHandler:
     def __init__(self):
+        self.keyboard = Controller()
         self.key_map = {}
-        self.ser = None
-        self.connect_arduino()
-
-    def connect_arduino(self):
-        """아두이노와 시리얼 연결 시도"""
-        try:
-            self.ser = serial.Serial(
-                port=config.SERIAL_PORT,
-                baudrate=config.BAUD_RATE,
-                timeout=0.1
-            )
-            time.sleep(2) # 아두이노 리셋 대기
-            print(f"✅ 아두이노 연결 성공: {config.SERIAL_PORT}")
-        except Exception as e:
-            print(f"❌ 아두이노 연결 실패: {e}\n(이 상태에서는 키 입력이 [Simulation]으로 출력만 됩니다.)")
-            self.ser = None
+        self.held_keys = set()
+        
+        # [수정] 0.05 -> 0.1로 변경 (초당 10회 입력 제한)
+        # 너무 빠르면 키가 씹히거나 게임이 인식을 못함
+        self.MIN_KEY_INTERVAL = 0.10
+        
+        self.PRESS_DURATION_MIN = 0.05
+        self.PRESS_DURATION_MAX = 0.08
+        
+        self.last_press_time = {}
 
     def update_key_map(self, new_map):
         self.key_map = new_map
 
-    def send_cmd(self, command):
-        """아두이노로 원시 명령어 전송 (예: 'Pspace')"""
-        if self.ser and self.ser.is_open:
-            try:
-                # 명령어 끝에 개행문자(\n)를 붙여서 전송
-                self.ser.write(f"{command}\n".encode())
-            except Exception as e:
-                print(f"⚠️ 전송 오류: {e}")
-        else:
-            # 연결 안 됐을 때 디버그용 출력
-            pass 
-            # print(f"[Simulation] Serial Send: {command}")
+    def get_pynput_key(self, key_name):
+        key_name = key_name.lower()
+        special_keys = {
+            'space': Key.space, 'enter': Key.enter, 'esc': Key.esc,
+            'shift': Key.shift, 'ctrl': Key.ctrl, 'alt': Key.alt,
+            'tab': Key.tab, 'up': Key.up, 'down': Key.down,
+            'left': Key.left, 'right': Key.right,
+            'f1': Key.f1, 'f2': Key.f2, 'f3': Key.f3, 'f4': Key.f4,
+            'ins': Key.insert, 'del': Key.delete, 'home': Key.home, 'end': Key.end,
+            'pgup': Key.page_up, 'pgdn': Key.page_down
+        }
+        if key_name in special_keys: return special_keys[key_name]
+        elif len(key_name) == 1: return KeyCode.from_char(key_name)
+        return None
 
-    def execute(self, action_name):
-        """추상 행동 -> 실제 키 입력 (Press & Release)"""
-        # 1. 매핑된 키가 있는지 확인
-        real_key = self.key_map.get(action_name)
+    def press(self, key_name):
+        """단발성 입력 (Tap) - 쿨타임 적용됨"""
+        target_key = self.get_pynput_key(key_name)
+        if not target_key: return
+
+        now = time.time()
+        last_time = self.last_press_time.get(key_name, 0)
         
-        # 2. 없으면 액션 이름 자체를 키로 사용 (예: "left", "space")
-        if not real_key:
-            real_key = action_name
+        # 쿨타임 체크 (너무 빠른 연타 방지)
+        if now - last_time < self.MIN_KEY_INTERVAL:
+            return 
 
-        self.send_cmd(f"P{real_key}")
-        time.sleep(0.05)
-        self.send_cmd(f"R{real_key}")
+        self.keyboard.press(target_key)
+        self.last_press_time[key_name] = now
         
-        return f"Hardware Input: [{real_key}]"
+        # 꾹 눌렀다 떼는 시간 (사람처럼)
+        time.sleep(random.uniform(self.PRESS_DURATION_MIN, self.PRESS_DURATION_MAX)) 
+        self.keyboard.release(target_key)
 
-    def hold(self, action_name):
-        """키 꾹 누르고 있기"""
-        # [수정] 매핑에 없으면 입력받은 키 그대로 사용
-        real_key = self.key_map.get(action_name, action_name)
-        if real_key:
-            self.send_cmd(f"P{real_key}")
+    def hold(self, key_name):
+        """지속 입력 (Hold)"""
+        if key_name in self.held_keys: return
+        target_key = self.get_pynput_key(key_name)
+        if target_key:
+            self.keyboard.press(target_key)
+            self.held_keys.add(key_name)
+            self.last_press_time[key_name] = time.time()
 
-    def release(self, action_name):
+    def release(self, key_name):
         """키 떼기"""
-        # [수정] 매핑에 없으면 입력받은 키 그대로 사용
-        real_key = self.key_map.get(action_name, action_name)
-        if real_key:
-            self.send_cmd(f"R{real_key}")
-            
+        if key_name not in self.held_keys: return
+        target_key = self.get_pynput_key(key_name)
+        if target_key:
+            self.keyboard.release(target_key)
+            self.held_keys.discard(key_name)
+            time.sleep(0.01)
+
     def release_all(self):
-        """비상 정지"""
-        self.send_cmd("S")
+        for k in list(self.held_keys): self.release(k)
+        self.held_keys.clear()

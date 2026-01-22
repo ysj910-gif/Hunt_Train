@@ -286,26 +286,28 @@ class TacticalNavigator:
             for action in self.physics.possible_actions:
                 dx, dy = self.physics.get_displacement(action, is_grounded)
                 
-                # 움직임이 너무 작으면(제자리) 무시
-                if abs(dx) < 2 and abs(dy) < 2: continue
+                # [★핵심 수정 1] 강제 중력 부여 (Gravity Injection)
+                # 공중에 떠 있다면(not is_grounded), 강제로 아래쪽(y+) 힘을 가함
+                if not is_grounded:
+                    dy += 8.0 # 중력 가속도 시뮬레이션 (값이 클수록 뚝 떨어짐)
                 
-                nx, ny = curr.x + dx, curr.y + dy
-                
-                # 맵 밖으로 나가는 경로 제외 (좌우 벽만 체크)
-                if not (0 <= nx <= 1366): continue
-                if not (-200 <= ny <= 1000): continue # 상하 여유 좀 줌
+                # [★핵심 수정 2] 수평 과속 방지 (핵 이동 방지)
+                # 만약 물리 엔진이 비정상적으로 빠른 X축 이동을 예측하면 패널티 부여
+                if abs(dx) > 25: # 플래시 점프 등으로 너무 빠르면
+                     dx *= 0.8   # 속도를 깎아서 보수적으로 판단
 
-                # 비용 계산 (G)
-                move_cost = math.hypot(dx, dy)
-                if dy < 0: move_cost *= 1.5 # 위로 가는 건 힘드니까 비용 더 줌
+                if abs(dx)<2 and abs(dy)<2: continue
                 
-                ng = curr.g + move_cost
-                nh = math.hypot(goal_x - nx, goal_y - ny)
+                nx, ny = curr.x+dx, curr.y+dy
+                if not (0<=nx<=1366 and -200<=ny<=1000): continue
                 
-                # 너무 멀어지는 경로 가지치기
-                if nh > h_start + 500: continue 
+                # 비용 계산 (포물선을 그리면 거리가 늘어나므로 자연스레 비용 증가)
+                cost = math.hypot(dx, dy)
+                if dy < 0: cost *= 1.5 # 위로 가는 동작은 비용을 더 줘서 남발 방지
                 
-                heapq.heappush(open_list, PathNode(nx, ny, ng, nh, curr, action))
+                ng = curr.g + cost
+                if ng + math.hypot(goal_x-nx, goal_y-ny) > curr.h + 500: continue
+                heapq.heappush(open_list, PathNode(nx, ny, ng, math.hypot(goal_x-nx, goal_y-ny), curr, action))
                 
         # 경로를 못 찾았으면, 그나마 가장 가까이 간 경로라도 반환
         if best_node_so_far and min_dist_to_goal < 200:

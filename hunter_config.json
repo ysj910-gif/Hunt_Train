@@ -62,6 +62,6 @@
         18
     ],
     "last_map_path": "C:/Users/ysj92/OneDrive/\ubc14\ud0d5 \ud654\uba74 \u2605/[Code]/Maple_Arduino/Hunt_train/Royal_Library_6.json",
-    "last_lstm_path": "C:/Users/ysj92/OneDrive/\ubc14\ud0d5 \ud654\uba74 \u2605/[Code]/Maple_Arduino/Hunt_train/kinesis_lstm_seq_v2.pth",
-    "last_rf_path": "C:/Users/ysj92/OneDrive/\ubc14\ud0d5 \ud654\uba74 \u2605/[Code]/Maple_Arduino/Hunt_train/rf_warmup_model.pkl"
+    "last_lstm_path": "C:/Users/ysj92/OneDrive/\ubc14\ud0d5 \ud654\uba74 \u2605/[Code]/Maple_Arduino/Hunt_train/kinesis_lstm_best.pth",
+    "last_rf_path": ""
 }
