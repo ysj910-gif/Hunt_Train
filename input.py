@@ -81,18 +81,23 @@ class InputHandler:
             self._send(f"R{target}")
 
     def release_all(self):
-        """모든 키 떼기 (비상 정지)"""
+        """모든 키 떼기 (최적화 버전)"""
+        # [수정] 이미 키를 아무것도 안 누르고 있다면, 굳이 아두이노에 신호를 보내지 않음 (렉 방지)
+        if not self.held_keys:
+            return
+
         if self.ser and self.ser.is_open:
             try:
-                # [중요] S 명령을 여러 번 보내서 확실하게 멈춤
-                for _ in range(3):
-                    self.ser.write(b"S\n")
-                    self.ser.flush()
-                    time.sleep(0.02)
+                # 확실하게 멈추기 위해 S 전송
+                self.ser.write(b"S\n")
+                self.ser.flush()
+                time.sleep(0.01)
+                
                 self.held_keys.clear()
+                # 로그가 너무 많이 뜨면 아래 줄을 주석(#) 처리하세요
                 print("🛑 [Input] 모든 키 해제 완료")
-            except:
-                pass
+            except Exception as e:
+                print(f"⚠️ 정지 신호 전송 실패: {e}")
             
     # [신규] 특정 키만 빼고 다 떼기 (설치기 쓸 때 등)
     def release_all_except(self, keep_key):
