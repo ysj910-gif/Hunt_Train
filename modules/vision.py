@@ -52,6 +52,8 @@ class VisionSystem:
         self.current_kill_count = 0
         self.player_pos = (0, 0)
         
+        self.skill_rois = {}
+        self.skill_debug_info = {}
         # MSS 객체 재사용을 위해 여기서 생성하지 않고 with문 사용 권장
         # 하지만 빈번한 호출 시 오버헤드를 줄이기 위해 멤버로 둘 수도 있음.
         # 여기서는 안정성을 위해 매 호출마다 with mss() 사용 (mss는 가벼움)
@@ -182,3 +184,108 @@ class VisionSystem:
             print(f"Capture Error: {e}")
             self.window_found = False # 다음 루프 때 다시 창을 찾도록 유도
             return np.zeros((100, 100, 3), dtype=np.uint8), 0, 0, 0, 0
+        
+    def set_skill_roi(self, skill_name, rect, frame=None, threshold=None):
+        """
+        [수정] 스킬별 맞춤형 기준값 자동 설정
+        사용자가 ROI를 설정할 때(스킬이 활성화된 상태일 때)의 밝기를 측정하여,
+        그보다 20%~30% 어두워지면 쿨타임으로 인식하도록 기준을 잡습니다.
+        """
+        if not hasattr(self, 'skill_rois'): self.skill_rois = {}
+
+        # 기본값 (저장된 값이 없거나 화면이 없을 때)
+        final_threshold = 100.0
+        
+        # 1. 저장된 설정 불러오기 (threshold가 직접 전달된 경우)
+        if threshold is not None:
+            final_threshold = float(threshold)
+            
+        # 2. [핵심] 화면을 보고 '현재 밝기'를 기준으로 자동 설정
+        elif frame is not None:
+            x, y, w, h = rect
+            # 영역 안전장치
+            if y+h <= frame.shape[0] and x+w <= frame.shape[1]:
+                roi_img = frame[y:y+h, x:x+w]
+                hsv = cv2.cvtColor(roi_img, cv2.COLOR_BGR2HSV)
+                
+                # 현재(활성화 상태)의 평균 명도(Value) 측정
+                active_v = np.mean(hsv[:, :, 2])
+                
+                # 기준값 설정: 현재 밝기의 75% 수준으로 잡음
+                # 예: 활성화(200) -> 기준(150). 쿨타임되어 100이 되면 True 반환.
+                final_threshold = active_v * 0.75
+                
+                print(f"✅ [{skill_name}] 기준값 설정 완료: 현재밝기({active_v:.1f}) -> 기준({final_threshold:.1f})")
+            
+        self.skill_rois[skill_name] = {
+            'rect': rect,
+            'threshold': final_threshold
+        }
+
+    def scan_skill_status(self, frame):
+        if not hasattr(self, 'skill_rois') or not self.skill_rois:
+            return
+
+        for name, data in self.skill_rois.items():
+            x, y, w, h = data['rect']
+            thresh = data['threshold']
+
+            # 범위 체크
+            if y+h > frame.shape[0] or x+w > frame.shape[1]: 
+                continue
+
+            # HSV 변환 및 밝기 측정
+            roi = frame[y:y+h, x:x+w]
+            hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
+            current_v = np.mean(hsv[:, :, 2]) # 명도(Value)
+
+            # 쿨타임 판단 (현재 밝기 < 기준값)
+            is_cool = current_v < thresh
+
+            # 정보 저장 (GUI에서 가져다 쓸 것임)
+            self.skill_debug_info[name] = {
+                "val": current_v,
+                "thr": thresh,
+                "is_cool": is_cool
+            }
+
+    def is_skill_on_cooldown(self, skill_name, frame):
+        """
+        [수정] 저장된 '개별 기준값'과 비교하여 쿨타임 판단
+        1순위: scan_skill_status에서 미리 계산한 값 사용 (GUI 표시와 로직 동기화)
+        2순위: 정보가 없으면 직접 계산 (안전장치)
+        """
+        # 1. 방금 scan_skill_status()가 갱신해둔 정보가 있다면 즉시 반환
+        #    (Agent와 GUI가 완전히 동일한 판단 결과를 공유하게 됨)
+        if hasattr(self, 'skill_debug_info') and skill_name in self.skill_debug_info:
+            return self.skill_debug_info[skill_name]["is_cool"]
+
+        # ---------------------------------------------------------
+        # 2. 정보가 없을 경우 직접 계산 (Fallback Logic)
+        #    (scan_skill_status가 호출되지 않았을 때를 대비한 안전장치)
+        # ---------------------------------------------------------
+        
+        # 예외 처리: 설정이 없거나 프레임이 비어있으면 False(준비됨) 처리
+        if not hasattr(self, 'skill_rois') or skill_name not in self.skill_rois or frame is None:
+            return False 
+            
+        data = self.skill_rois[skill_name]
+        x, y, w, h = data['rect']
+        stored_threshold = data['threshold'] # 이 스킬만의 고유 기준값
+        
+        # 이미지 범위 체크 (화면 밖으로 나가는 경우 방지)
+        if y+h > frame.shape[0] or x+w > frame.shape[1]: 
+            return False
+        
+        # ROI 추출 및 HSV 변환
+        roi_img = frame[y:y+h, x:x+w]
+        hsv = cv2.cvtColor(roi_img, cv2.COLOR_BGR2HSV)
+        
+        # 현재 화면의 명도(Value) 계산
+        # 채도(S)는 무시하고, 밝기(V)만으로 판단하는 것이 가장 정확함
+        current_v = np.mean(hsv[:, :, 2])
+        
+        # [판단] 현재 밝기가 설정해둔 기준보다 낮으면(어두우면) 쿨타임으로 간주
+        is_cooldown = current_v < stored_threshold
+        
+        return is_cooldown

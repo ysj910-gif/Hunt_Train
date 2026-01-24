@@ -13,39 +13,61 @@ try:
 except ImportError:
     PlatformManager = None
 
-# [1] 물리 엔진 모델
+# [1] 물리 엔진 모델 (학습 코드와 구조 통일)
 class HybridPhysicsNet(nn.Module):
     def __init__(self, num_actions):
         super(HybridPhysicsNet, self).__init__()
-        self.physics_params = nn.Embedding(num_actions, 3)
-        self.physics_params.weight.data.uniform_(0.1, 1.0)
-        self.action_emb = nn.Embedding(num_actions, 8)
+        
+        # --- 1. 물리 기반 파라미터 (Base) ---
+        # 각 행동의 기본 속도 [vx, vy]
+        self.velocity = nn.Embedding(num_actions, 2)
+        # 초기화는 학습된 값을 불러오므로 중요하지 않음
+        
+        # 중력 (학습 가능, 초기값 5.0)
+        self.gravity = nn.Parameter(torch.tensor([5.0]))
+        
+        # --- 2. 잔차 신경망 (Residual) ---
+        # 행동(Action)을 벡터로 변환 (학습 코드와 동일하게 16차원)
+        self.action_emb = nn.Embedding(num_actions, 16)
+        
+        # 보정값을 계산하는 신경망 (MLP)
         self.residual_net = nn.Sequential(
-            nn.Linear(8 + 1, 32),
+            nn.Linear(16 + 1, 64), # 입력: 행동임베딩(16) + 지상여부(1)
             nn.ReLU(),
-            nn.Linear(32, 16),
+            nn.Linear(64, 32),
             nn.ReLU(),
-            nn.Linear(16, 2)
+            nn.Linear(32, 2)       # 출력: 보정된 dx, dy
         )
 
     def forward(self, action_idx, is_grounded):
+        # 차원 정리
         if is_grounded.dim() > 1:
             is_grounded = is_grounded.squeeze(1)
-
-        params = self.physics_params(action_idx)
-        phys_vx = params[:, 0] * 10.0
-        phys_vy = params[:, 1] * 10.0
-        gravity = params[:, 2] * 5.0 * (1.0 - is_grounded)
         
-        base_dx = phys_vx
-        base_dy = phys_vy + gravity
-        base_move = torch.stack([base_dx, base_dy], dim=1)
+        # === [Step 1] 물리 엔진 예측 (큰 흐름) ===
+        v = self.velocity(action_idx)
+        vx, vy = v[:, 0], v[:, 1]
         
+        # 중력 적용 (양수, 아래 방향)
+        g = torch.clamp(self.gravity, min=0.0, max=30.0)
+        
+        # 물리적 이동량 계산
+        phys_dx = vx
+        phys_dy = torch.where(
+            is_grounded > 0.5,
+            vy * 0.0,   # 지상에선 물리적 수직 이동 없음
+            vy + g      # 공중에선 초기속도 + 중력
+        )
+        base_move = torch.stack([phys_dx, phys_dy], dim=1)
+        
+        # === [Step 2] 잔차 신경망 보정 (디테일 & 노이즈) ===
         emb = self.action_emb(action_idx)
-        cat_ground = is_grounded.unsqueeze(1)
-        cat = torch.cat([emb, cat_ground], dim=1)
-        residual = self.residual_net(cat)
+        # 지상 여부 정보도 같이 줌
+        state = torch.cat([emb, is_grounded.unsqueeze(1)], dim=1)
         
+        residual = self.residual_net(state)
+        
+        # === [Step 3] 최종 결합 ===
         return base_move + residual
 
 # [2] 물리 학습기
@@ -65,6 +87,7 @@ class PhysicsLearner:
             self.possible_actions = list(self.encoder.classes_)
             num_actions = len(self.possible_actions)
             
+            # 모델 초기화 (수정된 클래스 사용)
             self.model = HybridPhysicsNet(num_actions).to(self.device)
             self.model.load_state_dict(checkpoint['model_state'])
             self.model.eval()
@@ -283,7 +306,7 @@ class RuneManager:
 
         # 5. [Fallback] 단순 이동
         if dy < -30: 
-            if abs(dx) > 20: return ("right+jump" if dx > 0 else "left+jump"), "Fallback-Jump"
+            if abs(dx) > 20: return ("right+double_jump" if dx > 0 else "left+double_jump"), "Fallback-Jump" # 더블점프로 변경
             return "up+jump", "Fallback-UpJump"
             
         elif dy > 50:

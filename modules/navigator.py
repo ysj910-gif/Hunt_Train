@@ -1,323 +1,260 @@
-import math
+import numpy as np
 import time
+import random
+import json
 import heapq
-from collections import deque, defaultdict
 
-# A* 경로 탐색에 사용할 노드 클래스
-class PathNode:
-    def __init__(self, x, y, g, h, parent=None, action=None):
-        self.x = x
-        self.y = y
-        self.g = g
-        self.h = h
-        self.f = g + h
-        self.parent = parent
-        self.action = action
-    
-    def __lt__(self, other):
-        return self.f < other.f
+class InstallSkill:
+    """설치기 정보 정의"""
+    def __init__(self, name, up, down, left, right, duration):
+        self.name = name
+        self.real_range = {'up': up, 'down': down, 'left': left, 'right': right}
+        self.duration = duration
 
-# 그래프상의 지점 (웨이포인트) 클래스
-class Waypoint:
-    def __init__(self, x, y, platform_id):
-        self.x = x
-        self.y = y
-        self.pid = platform_id
+class PatrolPlanner:
+    def __init__(self):
+        self.spawn_points = []
+        self.active_installs = []   # 현재 맵에 깔려있는 스킬들
+        self.current_target = None
+        self.map_floor_y = 100
+        
+        self.SCALE_RATIO = 0.055 
+        self.VISIT_THRESHOLD = 6.0 
+        
+        # [수정] 단일 스킬 -> 스킬 리스트
+        self.install_skills = [] 
+        self.next_skill_to_use = None # 다음에 사용할 스킬
+        self.current_installing_skill = None
+
+    def load_map(self, map_json_path):
+        try:
+            with open(map_json_path, 'r') as f:
+                data = json.load(f)
+            
+            platforms = data.get('platforms', [])
+            avg_plat_y = 0
+            if platforms:
+                ys = [p['y'] for p in platforms]
+                self.map_floor_y = max(ys)
+                avg_plat_y = sum(ys) / len(ys)
+            
+            raw_spawns = []
+            if 'spawns' in data:
+                raw_spawns = [(s['x'], s['y']) for s in data['spawns']]
+            else:
+                for key in data:
+                    if isinstance(data[key], list):
+                        for item in data[key]:
+                            if isinstance(item, dict) and item.get('desc') == 'Auto Spawn':
+                                raw_spawns.append((item['x'], item['y']))
+            
+            self.spawn_points = []
+            if raw_spawns and avg_plat_y > 0:
+                avg_spawn_y = sum(s[1] for s in raw_spawns) / len(raw_spawns)
+                diff = avg_spawn_y - avg_plat_y
+                if diff > 20: 
+                    for (x, y) in raw_spawns:
+                        self.spawn_points.append((x, min(int(y - diff), self.map_floor_y)))
+                else:
+                    self.spawn_points = raw_spawns
+            else:
+                self.spawn_points = raw_spawns
+                
+            print(f"🗺️ [Patrol] 스폰 포인트 {len(self.spawn_points)}개 로드 완료")
+            print(f"   - 등록된 설치기 개수: {len(self.install_skills)}개")
+
+        except Exception as e:
+            print(f"Error loading map: {e}")
+
+    def _is_covered(self, point):
+        px, py = point
+        now = time.time()
+        # 만료된 설치기 제거
+        self.active_installs = [ins for ins in self.active_installs if ins['expiry'] > now]
+        
+        for ins in self.active_installs:
+            ix, iy = ins['pos']
+            skill = ins['skill']
+            
+            up = skill.real_range['up'] * self.SCALE_RATIO
+            down = skill.real_range['down'] * self.SCALE_RATIO
+            left = skill.real_range['left'] * self.SCALE_RATIO
+            right = skill.real_range['right'] * self.SCALE_RATIO
+            
+            if (ix - left <= px <= ix + right) and (iy - up <= py <= iy + down):
+                return True
+        return False
+
+    def get_next_skill(self):
+        """
+        사용 가능한(아직 설치 안 된) 스킬을 찾아서 반환
+        단순하게 이름으로 구분 (같은 이름의 스킬을 여러 개 등록했으면 여러 번 사용 가능)
+        """
+        now = time.time()
+        # 현재 활성화된 스킬들의 이름 목록
+        active_names = [ins['skill'].name for ins in self.active_installs if ins['expiry'] > now]
+        
+        # 등록된 스킬 중 활성화되지 않은 첫 번째 스킬 반환
+        # (예: 파운틴, 야누스1, 야누스2 순서로 등록되어 있다면 순서대로 체크)
+        # 주의: 동일한 스킬을 여러 번 쓰고 싶으면 GUI에 여러 줄로 등록해야 함 (예: 야누스, 야누스)
+        
+        # 간단한 로직: 활성화된 개수 < 등록된 개수 체크
+        # 하지만 특정 스킬 매칭이 필요하므로, 여기서는 "사용 안 된 객체"를 찾음
+        
+        # active_installs에 있는 skill 객체 자체를 비교
+        active_objs = [ins['skill'] for ins in self.active_installs if ins['expiry'] > now]
+        
+        for skill in self.install_skills:
+            if skill not in active_objs:
+                return skill
+        
+        return None # 모든 스킬이 쿨타임(지속시간) 중
+
+    def get_optimum_target(self, player_x, player_y, install_ready=False):
+        # 1. 만료된 설치기 정리 (가장 먼저 수행)
+        now = time.time()
+        self.active_installs = [ins for ins in self.active_installs if ins['expiry'] > now]
+
+        # 2. 커버되지 않은(사냥해야 할) 포인트들 추출
+        # (_is_covered는 스킬의 사각형 범위만 체크함)
+        uncovered_points = [p for p in self.spawn_points if not self._is_covered(p)]
+        
+        if not uncovered_points:
+            return (player_x, player_y), "All Covered"
+
+        # ---------------------------------------------------------
+        # [모드 1] 설치기 설치 (Install Mode)
+        # ---------------------------------------------------------
+        next_skill = self.get_next_skill()
+        
+        if install_ready and next_skill:
+            self.next_skill_to_use = next_skill 
+            
+            best_score = -1
+            best_target = uncovered_points[0]
+            
+            range_w = (next_skill.real_range['left'] + next_skill.real_range['right']) * self.SCALE_RATIO
+            
+            for cand in uncovered_points:
+                # 설치기 주변에 적이 얼마나 많은지 체크 (설치 효율 계산)
+                count = 0
+                for other in uncovered_points:
+                    if abs(other[0] - cand[0]) < range_w: 
+                        count += 1
+                
+                # [추가] 이미 설치된 다른 설치기와 너무 가까우면 설치 후보에서 제외 (중복 설치 방지)
+                too_close = False
+                for ins in self.active_installs:
+                    ix, iy = ins['pos']
+                    if np.hypot(cand[0]-ix, cand[1]-iy) < 150: # 150px 이내면 너무 가까움
+                        too_close = True; break
+                
+                if too_close: continue # 스킵
+
+                if count > best_score:
+                    best_score = count
+                    best_target = cand
+            
+            self.current_target = best_target
+            return best_target, "Install Position"
+            
+        # ---------------------------------------------------------
+        # [모드 2] 일반 순찰 (Patrol Mode) - 여기가 중요!
+        # ---------------------------------------------------------
+        else:
+            best_target = None
+            min_score = float('inf') # 점수가 낮을수록 좋음 (거리 기반 Cost)
+
+            for p in uncovered_points:
+                # A. 기본 점수: 플레이어와의 거리 (가까울수록 좋음)
+                dist = np.hypot(p[0]-player_x, p[1]-player_y)
+                
+                # 너무 가까운 포인트(이미 도착한 곳)는 무시
+                if dist <= self.VISIT_THRESHOLD: 
+                    continue
+                
+                score = dist 
+
+                # B. [핵심] 회피 로직 (Repulsion Logic)
+                # 활성화된 설치기 위치 주변에는 페널티를 부여해 봇이 안 가도록 만듦
+                for ins in self.active_installs:
+                    ix, iy = ins['pos']
+                    # 설치기와의 직선 거리 계산
+                    dist_to_install = np.hypot(p[0]-ix, p[1]-iy)
+                    
+                    # 설치기 반경 200px 이내의 포인트는 점수를 폭발적으로 높임 (기피 대상)
+                    if dist_to_install < 10: 
+                        score += 5000.0 # 절대 선택되지 않도록 강력한 페널티
+                
+                # 가장 점수가 낮은(가깝고 + 설치기 없는) 곳 선택
+                if score < min_score:
+                    min_score = score
+                    best_target = p
+            
+            if best_target:
+                self.current_target = best_target
+                return self.current_target, "Patrol Uncovered"
+            else:
+                # 갈 곳이 없으면(모두 설치기 근처거나 완료됨) 제자리 대기
+                return (player_x, player_y), "Patrol Done (Wait)"
+            
+    def notify_install_used(self, px, py):
+        if self.next_skill_to_use:
+            skill = self.next_skill_to_use
+            self.active_installs.append({
+                'pos': (px, py),
+                'skill': skill,
+                'expiry': time.time() + skill.duration
+            })
+            print(f"📍 설치기({skill.name}) 등록 @ ({px:.0f}, {py:.0f}) | 지속: {skill.duration}s")
+            self.next_skill_to_use = None # 초기화
 
 class TacticalNavigator:
-    def __init__(self, platform_manager, physics_learner):
+    def __init__(self, platform_manager, physics_model=None):
         self.pm = platform_manager
-        self.physics = physics_learner
-        
-        # 1. 맵 데이터
-        self.waypoints = [] 
-        self.visited_status = {} # {pid: last_visit_time}
-        
-        # 2. 전술 데이터 (사냥 효율)
-        # 구조: {pid: {'kills': 0, 'time': 0, 'enter_time': 0}}
-        self.sector_stats = defaultdict(lambda: {'kills': 0, 'time': 0, 'enter_time': 0})
-        self.current_sector = -1
-        self.best_sector = -1
-        self.is_camping = False
-        
-        # 캠핑 기준: 10초 동안 5마리 이상 (초당 0.5마리) 잡으면 명당으로 인정
-        self.CAMPING_THRESHOLD_KPS = 0.5 
-        
-        # 3. 경로 관리
-        self.current_path = deque()
-        self.target_node = None
+        self.patrol = PatrolPlanner()
+    
+    def build_graph(self, map_path=None):
+        target_path = map_path if map_path else getattr(self.pm, 'map_file', None)
+        if target_path: self.patrol.load_map(target_path)
 
-    def build_graph(self):
-        """맵 로드 시 실행: 발판 정보를 바탕으로 순찰 지점(Waypoint) 생성"""
-        self.waypoints = []
-        self.sector_stats.clear()
-        self.visited_status.clear()
-        self.is_camping = False
-        self.best_sector = -1
-        self.current_path.clear()
+    def update_combat_stats(self, px, py, kill_count): pass
+
+    def get_move_decision(self, px, py, install_ready=False):
+        if not self.patrol.spawn_points: return "None", "No Map Data"
+
+        target_pos, mode = self.patrol.get_optimum_target(px, py, install_ready)
+        tx, ty = target_pos
         
-        if not self.pm or not self.pm.platforms: 
-            return
+        # Floor Clamp
+        floor_y = self.patrol.map_floor_y
+        if ty > floor_y: ty = floor_y
         
-        print(f"🗺️ [Navigator] 전술 지도 생성 중... ({len(self.pm.platforms)}개 구역)")
+        dx = tx - px
+        dy = ty - py 
+        dist = abs(dx)
         
-        for p in self.pm.platforms:
-            pid = p.get('id', 0)
-            y = p['y']
-            margin = 30 # 발판 끝에서 안쪽으로 들어올 거리
-            
-            # 발판이 너무 짧으면 중앙 점 하나만 생성
-            width = p['x_end'] - p['x_start']
-            if width < 100:
-                targets = [((p['x_start'] + p['x_end']) / 2, y)]
+        vertical_limit = 25 if mode == "Install Position" else 10 # 설치 시 수직 판정 더 관대하게
+        
+        if dist <= self.patrol.VISIT_THRESHOLD and abs(dy) < vertical_limit:
+            if mode == "Install Position":
+                return "None", "Positioned for Install"
             else:
-                # 발판을 3등분(좌, 중, 우)하여 이동 포인트로 잡음
-                targets = [
-                    (p['x_start'] + margin, y), 
-                    ((p['x_start'] + p['x_end']) / 2, y),
-                    (p['x_end'] - margin, y)
-                ]
-            
-            for tx, ty in targets:
-                # 좌표가 유효한지 재확인
-                if p['x_start'] <= tx <= p['x_end']:
-                    self.waypoints.append(Waypoint(tx, ty, pid))
-            
-            self.visited_status[pid] = 0
+                return "None", "Reached Point"
 
-        print(f"✅ [Navigator] {len(self.waypoints)}개의 웨이포인트 생성 완료")
+        if dy > 25:
+            if py < floor_y - 5: 
+                if abs(dx) < 20: return "down+jump", f"Down to {mode}"
+        elif dy < -15: 
+            if abs(dx) < 20: return "up+jump", f"Up to {mode}"
 
-    def update_combat_stats(self, player_x, player_y, kill_increment):
-        """
-        [핵심] 몬스터 처치 시 호출됨.
-        현재 구역의 사냥 효율(KPM)을 계산하고 '꿀자리'를 판별함.
-        """
-        plat = self.pm.get_current_platform(player_x, player_y)
-        if not plat: return
-        
-        pid = plat['id']
-        now = time.time()
-        
-        # 구역이 바뀌었으면 이전 구역 정산
-        if self.current_sector != pid:
-            if self.current_sector != -1:
-                # 이전 구역 머문 시간 누적
-                duration = now - self.sector_stats[self.current_sector]['enter_time']
-                self.sector_stats[self.current_sector]['time'] += duration
-                
-            self.current_sector = pid
-            self.sector_stats[pid]['enter_time'] = now
-            
-        # 킬 수 누적
-        if kill_increment > 0:
-            self.sector_stats[pid]['kills'] += kill_increment
-            
-            # 효율 계산 (Kills per Second)
-            # 현재까지 누적된 시간 + 방금 들어와서 흐른 시간
-            total_time = self.sector_stats[pid]['time'] + (now - self.sector_stats[pid]['enter_time'])
-            
-            # 데이터 신뢰성을 위해 최소 5초 이상 머문 곳만 평가
-            if total_time > 5.0: 
-                kps = self.sector_stats[pid]['kills'] / total_time
-                
-                # 명당 판단: 효율이 기준치를 넘고, 기존 최고 기록보다 좋다면 갱신
-                # (기존 best가 있어도 더 좋은 곳이 나타나면 갈아탐)
-                current_best_kps = 0
-                if self.best_sector != -1:
-                    ts = self.sector_stats[self.best_sector]
-                    if ts['time'] > 0: current_best_kps = ts['kills'] / ts['time']
+        action = "right" if dx > 0 else "left"
+        return action, f"{mode}"
 
-                if kps > self.CAMPING_THRESHOLD_KPS and kps > current_best_kps:
-                    print(f"✨ [발견] 꿀자리를 찾았습니다! (ID: {pid}, 효율: {kps:.2f} kill/s)")
-                    self.best_sector = pid
-
-    def get_move_decision(self, player_x, player_y):
-        """현재 상황에 맞는 이동 명령 반환 (이동 vs 캠핑)"""
-        
-        # 현재 위치 ID 확인
-        curr_plat = self.pm.get_current_platform(player_x, player_y)
-        curr_pid = curr_plat['id'] if curr_plat else -1
-
-        # 1. 캠핑 모드 유지 확인
-        if self.is_camping:
-            # 명당 자리에 잘 있으면 -> 계속 캠핑
-            if curr_pid == self.best_sector:
-                return "None", "⛺ Camping" 
-            else:
-                # 밀려나거나 떨어졌으면 -> 다시 명당으로 복귀
-                return self.navigate_to_pid(player_x, player_y, self.best_sector)
-
-        # 2. 명당 자리를 알고 있다면? -> 그곳으로 이동
-        if self.best_sector != -1:
-            # 이미 명당에 도착했으면 캠핑 시작
-            if curr_pid == self.best_sector:
-                print(f"⛺ 명당(ID:{self.best_sector}) 도착! 제자리 사냥 시작.")
-                self.is_camping = True
-                self.current_path.clear()
-                return "None", "Camping Start"
+    def notify_install_success(self):
+        if self.patrol.current_target:
+            self.patrol.notify_install_used(self.patrol.current_target[0], self.patrol.current_target[1])
             
-            # 명당으로 가는 길 안내
-            print(f"🏃 꿀자리(ID:{self.best_sector})로 이동 중...")
-            move, msg = self.navigate_to_pid(player_x, player_y, self.best_sector)
-            return move, msg
-
-        # 3. 정보가 부족하면 탐색(Patrol) 계속
-        return self.patrol_mode(player_x, player_y)
-
-    def navigate_to_pid(self, px, py, target_pid):
-        """특정 발판(ID)으로 이동하는 경로 계산"""
-        # 경로가 없거나, 경로의 목적지가 바뀌었으면 새로 계산
-        if not self.current_path or (self.target_node and self.target_node.pid != target_pid):
-            
-            # 해당 ID를 가진 웨이포인트 중, 내 위치에서 가장 가까운 곳 선택
-            candidates = [wp for wp in self.waypoints if wp.pid == target_pid]
-            if not candidates: 
-                return "None", "Invalid PID"
-            
-            target = min(candidates, key=lambda wp: math.hypot(wp.x - px, wp.y - py))
-            
-            print(f"🧭 경로 계산: ({int(px)},{int(py)}) -> ID:{target_pid}")
-            path = self.find_path_astar(px, py, target.x, target.y)
-            
-            if path: 
-                self.current_path = deque(path)
-                self.target_node = target
-            else:
-                return "None", "Path Fail"
-            
-        if self.current_path:
-            return self.current_path.popleft(), f"Nav({len(self.current_path)})"
-            
-        return "None", "Stuck"
-
     def patrol_mode(self, px, py):
-        """정찰 모드: 안 가본 곳 위주로 돌아다님"""
-        # 현재 위치 방문 기록 갱신
-        plat = self.pm.get_current_platform(px, py)
-        if plat: self.visited_status[plat['id']] = time.time()
-        
-        # 이동할 경로가 없으면 새로운 목표 선정
-        if not self.current_path:
-            target = self.get_next_patrol_target(px, py)
-            if not target: return "None", "No Target"
-            
-            # print(f"🔍 정찰 목표 설정: ID {target.pid}")
-            path = self.find_path_astar(px, py, target.x, target.y)
-            if path: 
-                self.current_path = deque(path)
-                self.target_node = target
-            else:
-                # 못 가는 곳은 잠시 방문 처리해서 목표에서 제외
-                self.visited_status[target.pid] = time.time()
-            
-        if self.current_path:
-            return self.current_path.popleft(), "Patrol"
-        return "None", "Idle"
-
-    def get_next_patrol_target(self, player_x, player_y):
-        """가장 오랫동안 방문하지 않은 곳 + 가까운 곳 점수 매겨서 선정"""
-        now = time.time()
-        best_target = None
-        max_score = -float('inf')
-        
-        curr_plat = self.pm.get_current_platform(player_x, player_y)
-        curr_pid = curr_plat['id'] if curr_plat else -1
-        
-        for wp in self.waypoints:
-            # 1. 현재 있는 발판은 제외 (다른 곳으로 가야 함)
-            if wp.pid == curr_pid: continue
-            
-            # 2. 점수 계산
-            # Time Score: 오래 안 갈수록 점수 높음
-            time_score = now - self.visited_status.get(wp.pid, 0)
-            
-            # Dist Score: 너무 멀면 감점 (가까운 곳부터 탐색)
-            dist = math.hypot(wp.x - player_x, wp.y - player_y)
-            dist_score = dist * 0.5 
-            
-            final_score = time_score - dist_score
-            
-            if final_score > max_score:
-                max_score = final_score
-                best_target = wp
-                
-        return best_target
-
-    def find_path_astar(self, start_x, start_y, goal_x, goal_y):
-        """물리 엔진 예측을 활용한 A* 알고리즘"""
-        if not self.physics.model: return []
-
-        open_list = []
-        closed_set = set()
-        
-        # 시작 노드
-        h_start = math.hypot(goal_x - start_x, goal_y - start_y)
-        heapq.heappush(open_list, PathNode(start_x, start_y, 0, h_start))
-        
-        steps = 0
-        max_steps = 300 # 연산량 제한
-        
-        best_node_so_far = None
-        min_dist_to_goal = float('inf')
-        
-        while open_list and steps < max_steps:
-            steps += 1
-            curr = heapq.heappop(open_list)
-            
-            # 목표와의 거리 확인
-            dist = math.hypot(goal_x - curr.x, goal_y - curr.y)
-            
-            if dist < min_dist_to_goal:
-                min_dist_to_goal = dist
-                best_node_so_far = curr
-            
-            # 도착 판정 (30px 이내면 도착으로 간주)
-            if dist < 30:
-                return self.reconstruct_path(curr)
-            
-            # 방문 체크 (20px 그리드 단위)
-            state_key = (int(curr.x // 20), int(curr.y // 20))
-            if state_key in closed_set: continue
-            closed_set.add(state_key)
-            
-            # 물리 엔진을 통한 다음 위치 예측
-            is_grounded = (self.pm.get_current_platform(curr.x, curr.y) is not None)
-            
-            for action in self.physics.possible_actions:
-                dx, dy = self.physics.get_displacement(action, is_grounded)
-                
-                # [★핵심 수정 1] 강제 중력 부여 (Gravity Injection)
-                # 공중에 떠 있다면(not is_grounded), 강제로 아래쪽(y+) 힘을 가함
-                if not is_grounded:
-                    dy += 8.0 # 중력 가속도 시뮬레이션 (값이 클수록 뚝 떨어짐)
-                
-                # [★핵심 수정 2] 수평 과속 방지 (핵 이동 방지)
-                # 만약 물리 엔진이 비정상적으로 빠른 X축 이동을 예측하면 패널티 부여
-                if abs(dx) > 25: # 플래시 점프 등으로 너무 빠르면
-                     dx *= 0.8   # 속도를 깎아서 보수적으로 판단
-
-                if abs(dx)<2 and abs(dy)<2: continue
-                
-                nx, ny = curr.x+dx, curr.y+dy
-                if not (0<=nx<=1366 and -200<=ny<=1000): continue
-                
-                # 비용 계산 (포물선을 그리면 거리가 늘어나므로 자연스레 비용 증가)
-                cost = math.hypot(dx, dy)
-                if dy < 0: cost *= 1.5 # 위로 가는 동작은 비용을 더 줘서 남발 방지
-                
-                ng = curr.g + cost
-                if ng + math.hypot(goal_x-nx, goal_y-ny) > curr.h + 500: continue
-                heapq.heappush(open_list, PathNode(nx, ny, ng, math.hypot(goal_x-nx, goal_y-ny), curr, action))
-                
-        # 경로를 못 찾았으면, 그나마 가장 가까이 간 경로라도 반환
-        if best_node_so_far and min_dist_to_goal < 200:
-            return self.reconstruct_path(best_node_so_far)
-            
-        return [] # 실패
-
-    def reconstruct_path(self, node):
-        path = []
-        while node and node.parent:
-            path.append(node.action)
-            node = node.parent
-        return list(reversed(path))
+        act, _ = self.get_move_decision(px, py)
+        return act

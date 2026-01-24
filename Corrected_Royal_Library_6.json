@@ -1,0 +1,170 @@
+{
+    "platforms": [
+        {
+            "y": 51,
+            "x_start": 26,
+            "x_end": 55,
+            "id": 0
+        },
+        {
+            "y": 50,
+            "x_start": 68,
+            "x_end": 99,
+            "id": 1
+        },
+        {
+            "y": 53,
+            "x_start": 106,
+            "x_end": 128,
+            "id": 2
+        },
+        {
+            "y": 66,
+            "x_start": 19,
+            "x_end": 75,
+            "id": 3
+        },
+        {
+            "y": 66,
+            "x_start": 86,
+            "x_end": 122,
+            "id": 4
+        },
+        {
+            "y": 68,
+            "x_start": 143,
+            "x_end": 172,
+            "id": 5
+        },
+        {
+            "y": 84,
+            "x_start": 14,
+            "x_end": 61,
+            "id": 6
+        },
+        {
+            "y": 83,
+            "x_start": 75,
+            "x_end": 124,
+            "id": 7
+        },
+        {
+            "y": 83,
+            "x_start": 135,
+            "x_end": 180,
+            "id": 8
+        },
+        {
+            "y": 98,
+            "x_start": 10,
+            "x_end": 184,
+            "id": 9
+        }
+    ],
+    "portals": [
+        {
+            "in_x": 37,
+            "in_y": 91,
+            "out_x": 173,
+            "out_y": 139
+        },
+        {
+            "in_x": 173,
+            "in_y": 139,
+            "out_x": 38,
+            "out_y": 91
+        }
+    ],
+    "spawns": [
+        {
+            "x": 40,
+            "y": 46,
+            "desc": "Auto Spawn"
+        },
+        {
+            "x": 83,
+            "y": 45,
+            "desc": "Auto Spawn"
+        },
+        {
+            "x": 117,
+            "y": 48,
+            "desc": "Auto Spawn"
+        },
+        {
+            "x": 33,
+            "y": 61,
+            "desc": "Auto Spawn"
+        },
+        {
+            "x": 61,
+            "y": 61,
+            "desc": "Auto Spawn"
+        },
+        {
+            "x": 104,
+            "y": 61,
+            "desc": "Auto Spawn"
+        },
+        {
+            "x": 157,
+            "y": 63,
+            "desc": "Auto Spawn"
+        },
+        {
+            "x": 25,
+            "y": 79,
+            "desc": "Auto Spawn"
+        },
+        {
+            "x": 49,
+            "y": 79,
+            "desc": "Auto Spawn"
+        },
+        {
+            "x": 87,
+            "y": 78,
+            "desc": "Auto Spawn"
+        },
+        {
+            "x": 111,
+            "y": 78,
+            "desc": "Auto Spawn"
+        },
+        {
+            "x": 146,
+            "y": 78,
+            "desc": "Auto Spawn"
+        },
+        {
+            "x": 168,
+            "y": 78,
+            "desc": "Auto Spawn"
+        },
+        {
+            "x": 47,
+            "y": 93,
+            "desc": "Auto Spawn"
+        },
+        {
+            "x": 72,
+            "y": 93,
+            "desc": "Auto Spawn"
+        },
+        {
+            "x": 97,
+            "y": 93,
+            "desc": "Auto Spawn"
+        },
+        {
+            "x": 121,
+            "y": 93,
+            "desc": "Auto Spawn"
+        },
+        {
+            "x": 146,
+            "y": 93,
+            "desc": "Auto Spawn"
+        }
+    ]
+}

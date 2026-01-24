@@ -2,36 +2,42 @@ import torch
 import torch.nn as nn
 
 class LSTMModel(nn.Module):
-    def __init__(self, input_size, hidden_size, num_layers, num_classes, future_steps=1, dropout=0.3):
+    def __init__(self, input_size, hidden_size, num_layers, num_classes, 
+                 num_jobs=10, job_embed_dim=16, dropout=0.3):
         super(LSTMModel, self).__init__()
-        self.hidden_size = hidden_size
-        self.num_layers = num_layers
-        self.future_steps = future_steps
-        self.num_classes = num_classes
         
-        # [핵심] 레이어 설정 (Dropout 적용)
-        self.lstm = nn.LSTM(
-            input_size, 
-            hidden_size, 
-            num_layers, 
-            batch_first=True,
-            dropout=dropout if num_layers > 1 else 0
-        )
+        # 1. 직업 임베딩 층 (직업 ID -> 벡터 변환)
+        self.job_embedding = nn.Embedding(num_jobs, job_embed_dim)
         
-        # [핵심] 출력층: 미래의 N개 스텝을 모두 예측하기 위해 출력 노드 개수를 늘림
-        # 예: 행동 클래스가 10개이고 미래 30프레임을 예측한다면 -> 출력 300개
-        self.fc = nn.Linear(hidden_size, num_classes * future_steps)
+        # 2. LSTM 입력 크기 = 센서 데이터 크기 + 직업 벡터 크기
+        combined_input_size = input_size + job_embed_dim
+        
+        # 3. LSTM 레이어
+        self.lstm = nn.LSTM(combined_input_size, hidden_size, num_layers, 
+                            batch_first=True, dropout=dropout)
+        
+        # 4. 분류기 (행동 예측용)
+        self.fc = nn.Linear(hidden_size, num_classes)
 
-    def forward(self, x):
-        # 초기 Hidden State / Cell State
-        h0 = torch.zeros(self.num_layers, x.size(0), self.hidden_size).to(x.device)
-        c0 = torch.zeros(self.num_layers, x.size(0), self.hidden_size).to(x.device)
+    def forward(self, x, job_idx): 
+        # x: (Batch, Seq_Len, Input_Size)
+        # job_idx: (Batch,)  <-- 1D 텐서여야 함
         
-        # LSTM 실행
-        out, _ = self.lstm(x, (h0, c0))
+        # 1. 직업 ID를 임베딩 벡터로 변환
+        # (Batch) -> (Batch, Embed_Dim)
+        job_emb = self.job_embedding(job_idx)
         
-        # Many-to-One: 마지막 타임스텝의 정보만 사용하여 미래 전체를 예측
-        out = self.fc(out[:, -1, :])
+        # 2. 임베딩을 시퀀스 길이에 맞춰 복사 (모든 프레임에 직업 정보 붙이기)
+        # (Batch, Embed) -> (Batch, 1, Embed) -> (Batch, Seq, Embed)
+        seq_len = x.size(1)
+        job_emb = job_emb.unsqueeze(1).expand(-1, seq_len, -1)
         
-        # 출력 형태 변환: (Batch, Future_Steps, Num_Classes)
-        return out.reshape(-1, self.future_steps, self.num_classes)
+        # 3. 센서 데이터와 직업 유전자 결합
+        # 결과: (Batch, Seq, Input + Embed)
+        x = torch.cat([x, job_emb], dim=2)
+
+        # 4. LSTM 실행
+        out, _ = self.lstm(x)
+        
+        # 5. 마지막 프레임의 결과만 사용하여 분류
+        return self.fc(out[:, -1, :])

@@ -47,8 +47,8 @@
             "dur": 0.0
         }
     },
-    "map_offset_x": 0,
-    "map_offset_y": 0,
+    "map_offset_x": -8,
+    "map_offset_y": 1,
     "minimap_roi": [
         10,
         69,
@@ -61,7 +61,90 @@
         64,
         18
     ],
-    "last_map_path": "C:/Users/ysj92/OneDrive/\ubc14\ud0d5 \ud654\uba74 \u2605/[Code]/Maple_Arduino/Hunt_train/Royal_Library_6.json",
-    "last_lstm_path": "C:/Users/ysj92/OneDrive/\ubc14\ud0d5 \ud654\uba74 \u2605/[Code]/Maple_Arduino/Hunt_train/kinesis_lstm_best.pth",
-    "last_rf_path": ""
+    "last_map_path": "C:/Users/ysj92/OneDrive/\ubc14\ud0d5 \ud654\uba74 \u2605/[Code]/Maple_Arduino/Hunt_train/map/Fixed_Royal_Library_6.json",
+    "last_lstm_path": "C:/Users/ysj92/OneDrive/\ubc14\ud0d5 \ud654\uba74 \u2605/[Code]/Maple_Arduino/Hunt_train/train/best_gru_model_boost.pth",
+    "last_rf_path": "",
+    "job_settings": {
+        "Kinesis": {
+            "skills": {
+                "\uc2f8\uc774\ud0a5 \ubd88\ub9bf": {
+                    "key": "r",
+                    "cd": 0.0,
+                    "dur": 0.0
+                },
+                "jump": {
+                    "key": "e",
+                    "cd": 0.0,
+                    "dur": 0.0
+                },
+                "\uc2dc\ud000\uc2a4 1": {
+                    "key": "6",
+                    "cd": 120.0,
+                    "dur": 0.0
+                },
+                "\uccb4\ud06c\uba54\uc774\ud2b8": {
+                    "key": "f",
+                    "cd": 30.0,
+                    "dur": 0.0
+                },
+                "\uac2c\ube57": {
+                    "key": "d",
+                    "cd": 30.0,
+                    "dur": 0.0
+                },
+                "\uc624\ud504\ub2dd": {
+                    "key": "s",
+                    "cd": 30.0,
+                    "dur": 0.0
+                },
+                "\uc5d0\ubc84\uc2f8\uc774\ud0a5": {
+                    "key": "2",
+                    "cd": 120.0,
+                    "dur": 0.0
+                }
+            },
+            "installs": {
+                "fountain": {
+                    "key": "4",
+                    "up": 20,
+                    "down": 8,
+                    "left": 18,
+                    "right": 18,
+                    "dur": 60.0
+                },
+                "janus": {
+                    "key": "5",
+                    "up": 26,
+                    "down": 9,
+                    "left": 17,
+                    "right": 17,
+                    "dur": 60.0
+                }
+            }
+        }
+    },
+    "last_job": "Kinesis",
+    "saved_job_list": [
+        "Kinesis"
+    ],
+    "skill_rois": {
+        "\ud30c\uc6b4\ud2f4": {
+            "rect": [
+                1051,
+                687,
+                32,
+                33
+            ],
+            "threshold": 133.34294507575757
+        },
+        "\uc57c\ub204\uc2a4": {
+            "rect": [
+                1087,
+                686,
+                31,
+                36
+            ],
+            "threshold": 105.40685483870968
+        }
+    }
 }
